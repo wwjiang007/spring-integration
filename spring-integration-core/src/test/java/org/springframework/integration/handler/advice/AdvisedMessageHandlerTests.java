@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -143,8 +143,8 @@ public class AdvisedMessageHandlerTests {
 		advice.setBeanFactory(mock(BeanFactory.class));
 		advice.setSuccessChannel(successChannel);
 		advice.setFailureChannel(failureChannel);
-		advice.setOnSuccessExpression("'foo'");
-		advice.setOnFailureExpression("'bar:' + #exception.message");
+		advice.setOnSuccessExpressionString("'foo'");
+		advice.setOnFailureExpressionString("'bar:' + #exception.message");
 
 		List<Advice> adviceChain = new ArrayList<Advice>();
 		adviceChain.add(advice);
@@ -237,8 +237,8 @@ public class AdvisedMessageHandlerTests {
 		advice.setBeanFactory(mock(BeanFactory.class));
 		advice.setSuccessChannel(successChannel);
 		advice.setFailureChannel(failureChannel);
-		advice.setOnSuccessExpression("1/0");
-		advice.setOnFailureExpression("1/0");
+		advice.setOnSuccessExpressionString("1/0");
+		advice.setOnFailureExpressionString("1/0");
 
 		List<Advice> adviceChain = new ArrayList<Advice>();
 		adviceChain.add(advice);
@@ -301,8 +301,8 @@ public class AdvisedMessageHandlerTests {
 		advice.setBeanFactory(mock(BeanFactory.class));
 		advice.setSuccessChannel(successChannel);
 		advice.setFailureChannel(failureChannel);
-		advice.setOnSuccessExpression("1/0");
-		advice.setOnFailureExpression("1/0");
+		advice.setOnSuccessExpressionString("1/0");
+		advice.setOnFailureExpressionString("1/0");
 
 		List<Advice> adviceChain = new ArrayList<Advice>();
 		adviceChain.add(advice);
@@ -642,6 +642,8 @@ public class AdvisedMessageHandlerTests {
 		RetryTemplate retryTemplate = new RetryTemplate();
 		retryTemplate.setRetryPolicy(new SimpleRetryPolicy() {
 
+			static final long serialVersionUID = -1;
+
 			@Override
 			public boolean canRetry(RetryContext context) {
 				return false;
@@ -722,7 +724,7 @@ public class AdvisedMessageHandlerTests {
 		ExpressionEvaluatingRequestHandlerAdvice expressionAdvice = new ExpressionEvaluatingRequestHandlerAdvice();
 		expressionAdvice.setBeanFactory(mock(BeanFactory.class));
 //		MessagingException / RuntimeException
-		expressionAdvice.setOnFailureExpression("#exception.cause.message");
+		expressionAdvice.setOnFailureExpressionString("#exception.cause.message");
 		expressionAdvice.setReturnFailureExpressionResult(true);
 		final AtomicInteger outerCounter = new AtomicInteger();
 		adviceChain.add(new AbstractRequestHandlerAdvice() {
@@ -769,7 +771,7 @@ public class AdvisedMessageHandlerTests {
 
 		ExpressionEvaluatingRequestHandlerAdvice expressionAdvice = new ExpressionEvaluatingRequestHandlerAdvice();
 		expressionAdvice.setBeanFactory(mock(BeanFactory.class));
-		expressionAdvice.setOnFailureExpression("#exception.message");
+		expressionAdvice.setOnFailureExpressionString("#exception.message");
 		expressionAdvice.setFailureChannel(errors);
 
 		adviceChain.add(new RequestHandlerRetryAdvice());
@@ -849,7 +851,7 @@ public class AdvisedMessageHandlerTests {
 
 		ExpressionEvaluatingRequestHandlerAdvice expressionAdvice = new ExpressionEvaluatingRequestHandlerAdvice();
 		expressionAdvice.setBeanFactory(mock(BeanFactory.class));
-		expressionAdvice.setOnFailureExpression("'foo'");
+		expressionAdvice.setOnFailureExpressionString("'foo'");
 		expressionAdvice.setFailureChannel(errors);
 
 		Throwable theThrowable = new Throwable("foo");
@@ -897,7 +899,7 @@ public class AdvisedMessageHandlerTests {
 		when(logger.isWarnEnabled()).thenReturn(Boolean.TRUE);
 		final AtomicReference<String> logMessage = new AtomicReference<String>();
 		doAnswer(invocation -> {
-			logMessage.set(invocation.getArgumentAt(0, String.class));
+			logMessage.set(invocation.getArgument(0));
 			return null;
 		}).when(logger).warn(Mockito.anyString());
 		DirectFieldAccessor accessor = new DirectFieldAccessor(advice);

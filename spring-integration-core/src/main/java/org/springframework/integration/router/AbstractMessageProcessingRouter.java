@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2013 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ import java.util.List;
 
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.context.Lifecycle;
-import org.springframework.messaging.Message;
+import org.springframework.core.convert.ConversionService;
 import org.springframework.integration.handler.AbstractMessageProcessor;
 import org.springframework.integration.handler.MessageProcessor;
+import org.springframework.messaging.Message;
 import org.springframework.util.Assert;
 
 /**
@@ -49,7 +50,10 @@ class AbstractMessageProcessingRouter extends AbstractMappingMessageRouter
 	public final void onInit() throws Exception {
 		super.onInit();
 		if (this.messageProcessor instanceof AbstractMessageProcessor) {
-			((AbstractMessageProcessor<?>) this.messageProcessor).setConversionService(this.getConversionService());
+			ConversionService conversionService = getConversionService();
+			if (conversionService != null) {
+				((AbstractMessageProcessor<?>) this.messageProcessor).setConversionService(conversionService);
+			}
 		}
 		if (this.messageProcessor instanceof BeanFactoryAware && this.getBeanFactory() != null) {
 			((BeanFactoryAware) this.messageProcessor).setBeanFactory(this.getBeanFactory());

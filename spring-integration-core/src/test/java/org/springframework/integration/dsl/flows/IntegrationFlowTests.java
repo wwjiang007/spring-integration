@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,10 +46,10 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.MessageDispatchingException;
 import org.springframework.integration.MessageRejectedException;
-import org.springframework.integration.annotation.IntegrationComponentScan;
 import org.springframework.integration.annotation.MessageEndpoint;
 import org.springframework.integration.annotation.MessagingGateway;
 import org.springframework.integration.annotation.ServiceActivator;
+import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.channel.FixedSubscriberChannel;
 import org.springframework.integration.channel.QueueChannel;
 import org.springframework.integration.config.EnableIntegration;
@@ -59,7 +59,10 @@ import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.dsl.Pollers;
 import org.springframework.integration.dsl.channel.MessageChannels;
 import org.springframework.integration.handler.AbstractReplyProducingMessageHandler;
+import org.springframework.integration.handler.GenericHandler;
+import org.springframework.integration.handler.advice.ErrorMessageSendingRecoverer;
 import org.springframework.integration.handler.advice.ExpressionEvaluatingRequestHandlerAdvice;
+import org.springframework.integration.handler.advice.RequestHandlerRetryAdvice;
 import org.springframework.integration.scheduling.PollerMetadata;
 import org.springframework.integration.store.MessageStore;
 import org.springframework.integration.store.SimpleMessageStore;
@@ -72,6 +75,7 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageDeliveryException;
 import org.springframework.messaging.MessageHandler;
 import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.PollableChannel;
 import org.springframework.messaging.SubscribableChannel;
 import org.springframework.messaging.support.ErrorMessage;
@@ -81,8 +85,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
 import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.context.ContextConfiguration;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+import org.springframework.test.context.junit4.SpringRunner;
 
 /**
  * @author Artem Bilan
@@ -91,8 +94,7 @@ import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
  *
  * @since 5.0
  */
-@ContextConfiguration
-@RunWith(SpringJUnit4ClassRunner.class)
+@RunWith(SpringRunner.class)
 @DirtiesContext
 public class IntegrationFlowTests {
 
@@ -417,8 +419,15 @@ public class IntegrationFlowTests {
 		assertEquals(6, receive3.getPayload());
 	}
 
+	@Autowired
+	private ErrorRecovererFlowGateway errorRecovererFlowGateway;
 
-	@MessagingGateway(defaultRequestChannel = "controlBus")
+	@Test
+	public void testReplyChannelFromReplyMessage() {
+		assertEquals("foo", this.errorRecovererFlowGateway.testIt("foo"));
+	}
+
+	@MessagingGateway
 	public interface ControlBusGateway {
 
 		void send(String command);
@@ -426,12 +435,13 @@ public class IntegrationFlowTests {
 
 	@Configuration
 	@EnableIntegration
-	@IntegrationComponentScan
 	public static class ContextConfiguration {
 
 		@Bean
 		public IntegrationFlow controlBusFlow() {
-			return IntegrationFlows.from("controlBus").controlBus().get();
+			return IntegrationFlows.from(ControlBusGateway.class)
+					.controlBus()
+					.get();
 		}
 
 		@Bean(name = PollerMetadata.DEFAULT_POLLER)
@@ -474,7 +484,7 @@ public class IntegrationFlowTests {
 		@Bean
 		public Advice expressionAdvice() {
 			ExpressionEvaluatingRequestHandlerAdvice advice = new ExpressionEvaluatingRequestHandlerAdvice();
-			advice.setOnSuccessExpression("payload");
+			advice.setOnSuccessExpressionString("payload");
 			advice.setSuccessChannel(this.successChannel);
 			return advice;
 		}
@@ -681,6 +691,42 @@ public class IntegrationFlowTests {
 		public MessageChannel gatewayError() {
 			return MessageChannels.queue().get();
 		}
+
+		@Bean
+		public IntegrationFlow errorRecovererFlow() {
+			return IntegrationFlows.from(ErrorRecovererFlowGateway.class)
+					.handle((GenericHandler<?>) (p, h) -> {
+						throw new RuntimeException("intentional");
+					}, e -> e.advice(retryAdvice()))
+					.get();
+		}
+
+		@Bean
+		public RequestHandlerRetryAdvice retryAdvice() {
+			RequestHandlerRetryAdvice requestHandlerRetryAdvice = new RequestHandlerRetryAdvice();
+			requestHandlerRetryAdvice.setRecoveryCallback(new ErrorMessageSendingRecoverer(recoveryChannel()));
+			return requestHandlerRetryAdvice;
+		}
+
+		@Bean
+		public MessageChannel recoveryChannel() {
+			return new DirectChannel();
+		}
+
+		@Bean
+		public IntegrationFlow recoveryFlow() {
+			return IntegrationFlows.from(recoveryChannel())
+					.<MessagingException, Message<?>>transform(MessagingException::getFailedMessage)
+					.get();
+
+		}
+
+	}
+
+	@MessagingGateway
+	private interface ErrorRecovererFlowGateway {
+
+		String testIt(String payload);
 
 	}
 

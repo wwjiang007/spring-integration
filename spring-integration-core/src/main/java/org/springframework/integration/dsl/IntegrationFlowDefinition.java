@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -34,27 +35,27 @@ import org.springframework.expression.Expression;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.integration.aggregator.AggregatingMessageHandler;
 import org.springframework.integration.aggregator.BarrierMessageHandler;
-import org.springframework.integration.aggregator.ResequencingMessageHandler;
 import org.springframework.integration.channel.ChannelInterceptorAware;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.channel.FixedSubscriberChannel;
+import org.springframework.integration.channel.MessageChannelReactiveUtils;
 import org.springframework.integration.channel.ReactiveChannel;
 import org.springframework.integration.channel.interceptor.WireTap;
 import org.springframework.integration.config.ConsumerEndpointFactoryBean;
 import org.springframework.integration.config.SourcePollingChannelAdapterFactoryBean;
+import org.springframework.integration.context.IntegrationContextUtils;
 import org.springframework.integration.core.GenericSelector;
+import org.springframework.integration.core.MessageProducer;
 import org.springframework.integration.core.MessageSelector;
 import org.springframework.integration.dsl.channel.MessageChannelSpec;
 import org.springframework.integration.dsl.channel.WireTapSpec;
 import org.springframework.integration.dsl.support.FixedSubscriberChannelPrototype;
 import org.springframework.integration.dsl.support.MessageChannelReference;
-import org.springframework.integration.endpoint.ReactiveConsumer;
 import org.springframework.integration.expression.ControlBusMethodFilter;
 import org.springframework.integration.expression.FunctionExpression;
 import org.springframework.integration.filter.ExpressionEvaluatingSelector;
 import org.springframework.integration.filter.MessageFilter;
 import org.springframework.integration.filter.MethodInvokingSelector;
-import org.springframework.integration.gateway.GatewayMessageHandler;
 import org.springframework.integration.handler.AbstractMessageProducingHandler;
 import org.springframework.integration.handler.BeanNameMessageProcessor;
 import org.springframework.integration.handler.BridgeHandler;
@@ -117,7 +118,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 
 	private static final SpelExpressionParser PARSER = new SpelExpressionParser();
 
-	private static final Set<MessageHandler> REFERENCED_REPLY_PRODUCERS = new HashSet<>();
+	private static final Set<MessageProducer> REFERENCED_REPLY_PRODUCERS = new HashSet<>();
 
 	protected final Set<Object> integrationComponents = new LinkedHashSet<>();
 
@@ -126,6 +127,8 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	protected Object currentComponent;
 
 	private StandardIntegrationFlow integrationFlow;
+
+	private boolean implicitChannel;
 
 	IntegrationFlowDefinition() {
 	}
@@ -191,7 +194,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @see org.springframework.integration.dsl.channel.MessageChannels
 	 */
 	public B channel(MessageChannelSpec<?, ?> messageChannelSpec) {
-		Assert.notNull(messageChannelSpec);
+		Assert.notNull(messageChannelSpec, "'messageChannelSpec' must not be null");
 		return channel(messageChannelSpec.get());
 	}
 
@@ -205,9 +208,9 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B channel(MessageChannel messageChannel) {
-		Assert.notNull(messageChannel);
+		Assert.notNull(messageChannel, "'messageChannel' must not be null");
 		if (this.currentMessageChannel != null) {
-			bridge(null);
+			bridge();
 		}
 		this.currentMessageChannel = messageChannel;
 		return registerOutputChannelIfCan(this.currentMessageChannel);
@@ -221,7 +224,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B channel(Function<Channels, MessageChannelSpec<?, ?>> channels) {
-		Assert.notNull(channels);
+		Assert.notNull(channels, "'channels' must not be null");
 		return channel(channels.apply(new Channels()));
 	}
 
@@ -247,7 +250,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B publishSubscribeChannel(Executor executor,
 			Consumer<PublishSubscribeSpec> publishSubscribeChannelConfigurer) {
-		Assert.notNull(publishSubscribeChannelConfigurer);
+		Assert.notNull(publishSubscribeChannelConfigurer, "'publishSubscribeChannelConfigurer' must not be null");
 		PublishSubscribeSpec spec = new PublishSubscribeSpec(executor);
 		publishSubscribeChannelConfigurer.accept(spec);
 		return addComponents(spec.getComponentsToRegister()).channel(spec);
@@ -396,7 +399,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * Populate the {@code Wire Tap} EI Pattern specific
 	 * {@link org.springframework.messaging.support.ChannelInterceptor} implementation
 	 * to the current {@link #currentMessageChannel}.
-	 * It is useful when an implicit {@link MessageChannel} is used between endpoints:
+	 * <p> It is useful when an implicit {@link MessageChannel} is used between endpoints:
 	 * <pre class="code">
 	 * {@code
 	 *  .transform("payload")
@@ -407,14 +410,17 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * This method can be used after any {@link #channel} for explicit {@link MessageChannel},
 	 * but with the caution do not impact existing {@link org.springframework.messaging.support.ChannelInterceptor}s.
 	 * @param wireTapSpec the {@link WireTapSpec} to use.
+	 * <p> When this EIP-method is used in the end of flow, it appends {@code nullChannel} to terminate flow properly,
+	 * Otherwise {@code Dispatcher has no subscribers} exception is thrown for implicit {@link DirectChannel}.
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B wireTap(WireTapSpec wireTapSpec) {
 		WireTap interceptor = wireTapSpec.get();
 		if (this.currentMessageChannel == null || !(this.currentMessageChannel instanceof ChannelInterceptorAware)) {
+			this.implicitChannel = true;
 			channel(new DirectChannel());
 		}
-		addComponents(wireTapSpec.getComponentsToRegister());
+		addComponent(wireTapSpec);
 		((ChannelInterceptorAware) this.currentMessageChannel).addInterceptor(interceptor);
 		return _this();
 	}
@@ -462,7 +468,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @see ExpressionEvaluatingTransformer
 	 */
 	public B transform(String expression, Consumer<GenericEndpointSpec<MessageTransformingHandler>> endpointConfigurer) {
-		Assert.hasText(expression);
+		Assert.hasText(expression, "'expression' must not be empty");
 		return transform(new ExpressionEvaluatingTransformer(PARSER.parseExpression(expression)),
 				endpointConfigurer);
 	}
@@ -558,7 +564,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B transform(MessageProcessorSpec<?> messageProcessorSpec,
 			Consumer<GenericEndpointSpec<MessageTransformingHandler>> endpointConfigurer) {
-		Assert.notNull(messageProcessorSpec);
+		Assert.notNull(messageProcessorSpec, "'messageProcessorSpec' must not be null");
 		MessageProcessor<?> processor = messageProcessorSpec.get();
 		return addComponent(processor)
 				.transform(new MethodInvokingTransformer(processor), endpointConfigurer);
@@ -612,7 +618,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public <P, T> B transform(Class<P> payloadType, GenericTransformer<P, T> genericTransformer,
 			Consumer<GenericEndpointSpec<MessageTransformingHandler>> endpointConfigurer) {
-		Assert.notNull(genericTransformer);
+		Assert.notNull(genericTransformer, "'genericTransformer' must not be null");
 		Transformer transformer = genericTransformer instanceof Transformer ? (Transformer) genericTransformer :
 				(isLambda(genericTransformer)
 						? new MethodInvokingTransformer(new LambdaMessageProcessor(genericTransformer, payloadType))
@@ -644,7 +650,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @see FilterEndpointSpec
 	 */
 	public B filter(String expression, Consumer<FilterEndpointSpec> endpointConfigurer) {
-		Assert.hasText(expression);
+		Assert.hasText(expression, "'expression' must not be empty");
 		return filter(new ExpressionEvaluatingSelector(expression), endpointConfigurer);
 	}
 
@@ -740,7 +746,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B filter(MessageProcessorSpec<?> messageProcessorSpec, Consumer<FilterEndpointSpec> endpointConfigurer) {
-		Assert.notNull(messageProcessorSpec);
+		Assert.notNull(messageProcessorSpec, "'messageProcessorSpec' must not be null");
 		MessageProcessor<?> processor = messageProcessorSpec.get();
 		return addComponent(processor)
 				.filter(new MethodInvokingSelector(processor), endpointConfigurer);
@@ -805,7 +811,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public <P> B filter(Class<P> payloadType, GenericSelector<P> genericSelector,
 			Consumer<FilterEndpointSpec> endpointConfigurer) {
-		Assert.notNull(genericSelector);
+		Assert.notNull(genericSelector, "'genericSelector' must not be null");
 		MessageSelector selector = genericSelector instanceof MessageSelector ? (MessageSelector) genericSelector :
 				(isLambda(genericSelector)
 						? new MethodInvokingSelector(new LambdaMessageProcessor(genericSelector, payloadType))
@@ -1047,7 +1053,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B handle(MessageProcessorSpec<?> messageProcessorSpec,
 			Consumer<GenericEndpointSpec<ServiceActivatingHandler>> endpointConfigurer) {
-		Assert.notNull(messageProcessorSpec);
+		Assert.notNull(messageProcessorSpec, "'messageProcessorSpec' must not be null");
 		MessageProcessor<?> processor = messageProcessorSpec.get();
 		return addComponent(processor)
 				.handle(new ServiceActivatingHandler(processor), endpointConfigurer);
@@ -1072,7 +1078,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public <H extends MessageHandler> B handle(MessageHandlerSpec<?, H> messageHandlerSpec,
 			Consumer<GenericEndpointSpec<H>> endpointConfigurer) {
-		Assert.notNull(messageHandlerSpec);
+		Assert.notNull(messageHandlerSpec, "'messageHandlerSpec' must not be null");
 		if (messageHandlerSpec instanceof ComponentsRegistration) {
 			addComponents(((ComponentsRegistration) messageHandlerSpec).getComponentsToRegister());
 		}
@@ -1096,7 +1102,16 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public <H extends MessageHandler> B handle(H messageHandler, Consumer<GenericEndpointSpec<H>> endpointConfigurer) {
 		Assert.notNull(messageHandler, "'messageHandler' must not be null");
-		return this.register(new GenericEndpointSpec<H>(messageHandler), endpointConfigurer);
+		return this.register(new GenericEndpointSpec<>(messageHandler), endpointConfigurer);
+	}
+
+	/**
+	 * Populate a {@link BridgeHandler} to the current integration flow position.
+	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #bridge(Consumer)
+	 */
+	public B bridge() {
+		return bridge(null);
 	}
 
 	/**
@@ -1114,7 +1129,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @see GenericEndpointSpec
 	 */
 	public B bridge(Consumer<GenericEndpointSpec<BridgeHandler>> endpointConfigurer) {
-		return this.register(new GenericEndpointSpec<BridgeHandler>(new BridgeHandler()), endpointConfigurer);
+		return register(new GenericEndpointSpec<>(new BridgeHandler()), endpointConfigurer);
 	}
 
 	/**
@@ -1182,10 +1197,10 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B enrich(Consumer<EnricherSpec> enricherConfigurer,
 			Consumer<GenericEndpointSpec<ContentEnricher>> endpointConfigurer) {
-		Assert.notNull(enricherConfigurer);
+		Assert.notNull(enricherConfigurer, "'enricherConfigurer' must not be null");
 		EnricherSpec enricherSpec = new EnricherSpec();
 		enricherConfigurer.accept(enricherSpec);
-		return this.handle(enricherSpec.get(), endpointConfigurer);
+		return handle(enricherSpec.get(), endpointConfigurer);
 	}
 
 	/**
@@ -1309,7 +1324,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B enrichHeaders(Consumer<HeaderEnricherSpec> headerEnricherConfigurer,
 			Consumer<GenericEndpointSpec<MessageTransformingHandler>> endpointConfigurer) {
-		Assert.notNull(headerEnricherConfigurer);
+		Assert.notNull(headerEnricherConfigurer, "'headerEnricherConfigurer' must not be null");
 		HeaderEnricherSpec headerEnricherSpec = new HeaderEnricherSpec();
 		headerEnricherConfigurer.accept(headerEnricherSpec);
 		return transform(headerEnricherSpec.get(), endpointConfigurer);
@@ -1364,7 +1379,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @see SplitterEndpointSpec
 	 */
 	public B split(String expression, Consumer<SplitterEndpointSpec<ExpressionEvaluatingSplitter>> endpointConfigurer) {
-		Assert.hasText(expression);
+		Assert.hasText(expression, "'expression' must not be empty");
 		return split(new ExpressionEvaluatingSplitter(PARSER.parseExpression(expression)), endpointConfigurer);
 	}
 
@@ -1479,7 +1494,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B split(MessageProcessorSpec<?> messageProcessorSpec,
 			Consumer<SplitterEndpointSpec<MethodInvokingSplitter>> endpointConfigurer) {
-		Assert.notNull(messageProcessorSpec);
+		Assert.notNull(messageProcessorSpec, "'messageProcessorSpec' must not be null");
 		MessageProcessor<?> processor = messageProcessorSpec.get();
 		return addComponent(processor)
 				.split(new MethodInvokingSplitter(processor), endpointConfigurer);
@@ -1592,7 +1607,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public <S extends AbstractMessageSplitter> B split(MessageHandlerSpec<?, S> splitterMessageHandlerSpec,
 			Consumer<SplitterEndpointSpec<S>> endpointConfigurer) {
-		Assert.notNull(splitterMessageHandlerSpec);
+		Assert.notNull(splitterMessageHandlerSpec, "'splitterMessageHandlerSpec' must not be null");
 		return split(splitterMessageHandlerSpec.get(), endpointConfigurer);
 	}
 
@@ -1618,7 +1633,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public <S extends AbstractMessageSplitter> B split(S splitter,
 			Consumer<SplitterEndpointSpec<S>> endpointConfigurer) {
-		Assert.notNull(splitter);
+		Assert.notNull(splitter, "'splitter' must not be null");
 		return this.register(new SplitterEndpointSpec<>(splitter), endpointConfigurer);
 	}
 
@@ -1725,7 +1740,9 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the {@link ResequencingMessageHandler} with default options.
+	 * Populate the
+	 * {@link org.springframework.integration.aggregator.ResequencingMessageHandler} with
+	 * default options.
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B resequence() {
@@ -1733,7 +1750,9 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the {@link ResequencingMessageHandler} with provided options from {@link ResequencerSpec}.
+	 * Populate the
+	 * {@link org.springframework.integration.aggregator.ResequencingMessageHandler} with
+	 * provided options from {@link ResequencerSpec}.
 	 * In addition accept options for the integration endpoint using {@link GenericEndpointSpec}.
 	 * Typically used with a Java 8 Lambda expression:
 	 * <pre class="code">
@@ -1743,7 +1762,8 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 *                    .phase(100))
 	 * }
 	 * </pre>
-	 * @param resequencer the {@link Consumer} to provide {@link ResequencingMessageHandler} options.
+	 * @param resequencer the {@link Consumer} to provide
+	 * {@link org.springframework.integration.aggregator.ResequencingMessageHandler} options.
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 * @see ResequencerSpec
 	 */
@@ -2117,7 +2137,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	public B route(MessageProcessorSpec<?> messageProcessorSpec,
 			Consumer<RouterSpec<Object, MethodInvokingRouter>> routerConfigurer,
 			Consumer<GenericEndpointSpec<MethodInvokingRouter>> endpointConfigurer) {
-		Assert.notNull(messageProcessorSpec);
+		Assert.notNull(messageProcessorSpec, "'messageProcessorSpec' must not be null");
 		MessageProcessor<?> processor = messageProcessorSpec.get();
 		return addComponent(processor)
 				.route(new MethodInvokingRouter(processor), routerConfigurer, endpointConfigurer);
@@ -2254,8 +2274,9 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the "artificial" {@link GatewayMessageHandler} for the provided
-	 * {@code requestChannel} to send a request with default options.
+	 * Populate the "artificial"
+	 * {@link org.springframework.integration.gateway.GatewayMessageHandler} for the
+	 * provided {@code requestChannel} to send a request with default options.
 	 * Uses {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy
 	 * on the background.
 	 * @param requestChannel the {@link MessageChannel} bean name.
@@ -2266,12 +2287,15 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the "artificial" {@link GatewayMessageHandler} for the provided
-	 * {@code requestChannel} to send a request with options from {@link GatewayEndpointSpec}.
-	 * Uses {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy
-	 * on the background.
+	 * Populate the "artificial"
+	 * {@link org.springframework.integration.gateway.GatewayMessageHandler} for the
+	 * provided {@code requestChannel} to send a request with options from
+	 * {@link GatewayEndpointSpec}. Uses
+	 * {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy on the
+	 * background.
 	 * @param requestChannel the {@link MessageChannel} bean name.
-	 * @param endpointConfigurer the {@link Consumer} to provide integration endpoint options.
+	 * @param endpointConfigurer the {@link Consumer} to provide integration endpoint
+	 * options.
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B gateway(String requestChannel, Consumer<GatewayEndpointSpec> endpointConfigurer) {
@@ -2279,10 +2303,11 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the "artificial" {@link GatewayMessageHandler} for the provided
-	 * {@code requestChannel} to send a request with default options.
-	 * Uses {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy
-	 * on the background.
+	 * Populate the "artificial"
+	 * {@link org.springframework.integration.gateway.GatewayMessageHandler}
+	 * for the provided {@code requestChannel} to send a request with default options.
+	 * Uses {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy on
+	 * the background.
 	 * @param requestChannel the {@link MessageChannel} to use.
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
@@ -2291,12 +2316,15 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the "artificial" {@link GatewayMessageHandler} for the provided
-	 * {@code requestChannel} to send a request with options from {@link GatewayEndpointSpec}.
-	 * Uses {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy
-	 * on the background.
+	 * Populate the "artificial"
+	 * {@link org.springframework.integration.gateway.GatewayMessageHandler} for the
+	 * provided {@code requestChannel} to send a request with options from
+	 * {@link GatewayEndpointSpec}. Uses
+	 * {@link org.springframework.integration.gateway.RequestReplyExchanger} Proxy on the
+	 * background.
 	 * @param requestChannel the {@link MessageChannel} to use.
-	 * @param endpointConfigurer the {@link Consumer} to provide integration endpoint options.
+	 * @param endpointConfigurer the {@link Consumer} to provide integration endpoint
+	 * options.
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B gateway(MessageChannel requestChannel, Consumer<GatewayEndpointSpec> endpointConfigurer) {
@@ -2304,8 +2332,9 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the "artificial" {@link GatewayMessageHandler} for the provided
-	 * {@code subflow}.
+	 * Populate the "artificial"
+	 * {@link org.springframework.integration.gateway.GatewayMessageHandler} for the
+	 * provided {@code subflow}.
 	 * Typically used with a Java 8 Lambda expression:
 	 * <pre class="code">
 	 * {@code
@@ -2320,8 +2349,9 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	}
 
 	/**
-	 * Populate the "artificial" {@link GatewayMessageHandler} for the provided
-	 * {@code subflow} with options from {@link GatewayEndpointSpec}.
+	 * Populate the "artificial"
+	 * {@link org.springframework.integration.gateway.GatewayMessageHandler} for the
+	 * provided {@code subflow} with options from {@link GatewayEndpointSpec}.
 	 * Typically used with a Java 8 Lambda expression:
 	 * <pre class="code">
 	 * {@code
@@ -2333,7 +2363,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @return the current {@link IntegrationFlowDefinition}.
 	 */
 	public B gateway(IntegrationFlow flow, Consumer<GatewayEndpointSpec> endpointConfigurer) {
-		Assert.notNull(flow);
+		Assert.notNull(flow, "'flow' must not be null");
 		final DirectChannel requestChannel = new DirectChannel();
 		IntegrationFlowBuilder flowBuilder = IntegrationFlows.from(requestChannel);
 		flow.configure(flowBuilder);
@@ -2348,6 +2378,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * as a default logging category.
 	 * <p> The full request {@link Message} will be logged.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log() {
 		return log(LoggingHandler.Level.INFO);
@@ -2361,6 +2392,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * <p> The full request {@link Message} will be logged.
 	 * @param level the {@link LoggingHandler.Level}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(LoggingHandler.Level level) {
 		return log(level, (String) null);
@@ -2373,6 +2405,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * <p> The full request {@link Message} will be logged.
 	 * @param category the logging category to use.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(String category) {
 		return log(LoggingHandler.Level.INFO, category);
@@ -2386,6 +2419,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param level the {@link LoggingHandler.Level}.
 	 * @param category the logging category to use.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(LoggingHandler.Level level, String category) {
 		return log(level, category, (Expression) null);
@@ -2401,9 +2435,10 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param logExpression the SpEL expression to evaluate logger message at runtime
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(LoggingHandler.Level level, String category, String logExpression) {
-		Assert.hasText(logExpression);
+		Assert.hasText(logExpression, "'logExpression' must not be empty");
 		return log(level, category, PARSER.parseExpression(logExpression));
 	}
 
@@ -2416,9 +2451,10 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param <P> the expected payload type.
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public <P> B log(Function<Message<P>, Object> function) {
-		Assert.notNull(function);
+		Assert.notNull(function, "'function' must not be null");
 		return log(new FunctionExpression<>(function));
 	}
 
@@ -2431,6 +2467,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param logExpression the {@link Expression} to evaluate logger message at runtime
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(Expression logExpression) {
 		return log(LoggingHandler.Level.INFO, logExpression);
@@ -2447,6 +2484,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param logExpression the {@link Expression} to evaluate logger message at runtime
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(LoggingHandler.Level level, Expression logExpression) {
 		return log(level, null, logExpression);
@@ -2463,6 +2501,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param logExpression the {@link Expression} to evaluate logger message at runtime
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(String category, Expression logExpression) {
 		return log(LoggingHandler.Level.INFO, category, logExpression);
@@ -2479,6 +2518,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param <P> the expected payload type.
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public <P> B log(LoggingHandler.Level level, Function<Message<P>, Object> function) {
 		return log(level, null, function);
@@ -2494,6 +2534,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param <P> the expected payload type.
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public <P> B log(String category, Function<Message<P>, Object> function) {
 		return log(LoggingHandler.Level.INFO, category, function);
@@ -2510,9 +2551,10 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param <P> the expected payload type.
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public <P> B log(LoggingHandler.Level level, String category, Function<Message<P>, Object> function) {
-		Assert.notNull(function);
+		Assert.notNull(function, "'function' must not be null");
 		return log(level, category, new FunctionExpression<>(function));
 	}
 
@@ -2527,6 +2569,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 * @param logExpression the {@link Expression} to evaluate logger message at runtime
 	 * against the request {@link Message}.
 	 * @return the current {@link IntegrationFlowDefinition}.
+	 * @see #wireTap(WireTapSpec)
 	 */
 	public B log(LoggingHandler.Level level, String category, Expression logExpression) {
 		LoggingHandler loggingHandler = new LoggingHandler(level);
@@ -2631,7 +2674,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 	 */
 	public B scatterGather(Consumer<RecipientListRouterSpec> scatterer, Consumer<AggregatorSpec> gatherer,
 			Consumer<ScatterGatherSpec> scatterGather) {
-		Assert.notNull(scatterer);
+		Assert.notNull(scatterer, "'scatterer' must not be null");
 		RecipientListRouterSpec recipientListRouterSpec = new RecipientListRouterSpec();
 		scatterer.accept(recipientListRouterSpec);
 		AggregatorSpec aggregatorSpec = new AggregatorSpec();
@@ -2640,8 +2683,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 		}
 
 		RecipientListRouter recipientListRouter = recipientListRouterSpec.get();
-		addComponent(recipientListRouter);
-		addComponents(recipientListRouterSpec.getComponentsToRegister());
+		addComponent(recipientListRouterSpec);
 		AggregatingMessageHandler aggregatingMessageHandler = aggregatorSpec.get().getT2();
 		addComponent(aggregatingMessageHandler);
 		ScatterGatherHandler messageHandler = new ScatterGatherHandler(recipientListRouter, aggregatingMessageHandler);
@@ -2726,8 +2768,7 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 		}
 		else {
 			if (channelForPublisher != null) {
-				Publisher<?> messagePublisher = ReactiveConsumer.adaptToPublisher(channelForPublisher);
-				publisher = (Publisher<Message<T>>) messagePublisher;
+				publisher = MessageChannelReactiveUtils.toPublisher(channelForPublisher);
 			}
 			else {
 				MessageChannel reactiveChannel = new ReactiveChannel();
@@ -2790,12 +2831,22 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 					currentComponent = extractProxyTarget(currentComponent);
 				}
 
-				if (currentComponent instanceof AbstractMessageProducingHandler) {
-					AbstractMessageProducingHandler messageProducer =
-							(AbstractMessageProducingHandler) currentComponent;
+				if (currentComponent instanceof MessageProducer) {
+					MessageProducer messageProducer =
+							(MessageProducer) currentComponent;
 					checkReuse(messageProducer);
 					if (channelName != null) {
-						messageProducer.setOutputChannelName(channelName);
+						if (messageProducer instanceof AbstractMessageProducingHandler) {
+							((AbstractMessageProducingHandler) messageProducer).setOutputChannelName(channelName);
+						}
+						else {
+							throw new BeanCreationException("The 'currentComponent' (" + currentComponent
+									+ ") must extend 'AbstractMessageProducingHandler' "
+									+ "for message channel resolution by name.\n"
+									+ "Your handler should extend 'AbstractMessageProducingHandler', "
+									+ "its subclass 'AbstractReplyProducingMessageHandler', or you should "
+									+ "reference a 'MessageChannel' bean instead of its name.");
+						}
 					}
 					else {
 						messageProducer.setOutputChannel(outputChannel);
@@ -2862,6 +2913,14 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 							+ "Add at lest '.bridge()' EIP-method before the end of flow.");
 				}
 			}
+
+			if (this.implicitChannel) {
+				Optional<Object> lastComponent = this.integrationComponents.stream().reduce((first, second) -> second);
+				if (lastComponent.get() instanceof WireTapSpec) {
+					channel(IntegrationContextUtils.NULL_CHANNEL_BEAN_NAME);
+				}
+			}
+
 			this.integrationFlow = new StandardIntegrationFlow(this.integrationComponents);
 		}
 		return this.integrationFlow;
@@ -2888,10 +2947,10 @@ public abstract class IntegrationFlowDefinition<B extends IntegrationFlowDefinit
 		}
 	}
 
-	private void checkReuse(AbstractMessageProducingHandler replyHandler) {
+	private void checkReuse(MessageProducer replyHandler) {
 		Assert.isTrue(!REFERENCED_REPLY_PRODUCERS.contains(replyHandler),
-				"An AbstractMessageProducingHandler may only be referenced once ("
-						+ replyHandler.getComponentName()
+				"A reply MessageProducer may only be referenced once ("
+						+ replyHandler
 						+ ") - use @Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE) on @Bean definition.");
 		REFERENCED_REPLY_PRODUCERS.add(replyHandler);
 	}

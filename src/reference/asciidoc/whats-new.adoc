@@ -14,8 +14,16 @@ development process.
 The new `MongoDbOutboundGateway` allows you to make queries to the database on demand by sending a message to its request channel.
 See <<mongodb-outbound-gateway>> for more information.
 
+==== HTTP Async Outbound Gateway and Channel Adapter
+
+The new `AsyncHttpRequestExecutingMessageHandler` adds support for `AsyncRestTemplate` for outbound channel adapter and gateway.
+See <<AsyncHttpRequestExecutingMessageHandler>> for more information.
+
 [[x5.0-general]]
 === General Changes
+
+Spring Integration is now fully based on Spring Framework `5.0` and Project Reactor `3.0`.
+Previous Project Reactor versions are no longer supported.
 
 ==== Core Changes
 
@@ -57,6 +65,9 @@ See <<file-reading>> for more information.
 
 The tail adapter now supports `idleEventInterval` to emit events when there is no data in the file during that period.
 See <<file-tailing>> for more information.
+
+The flush predicates for the `FileWritingMessageHandler` now have an additional parameter.
+See <<file-flushing>> for more information.
 
 ==== (S)FTP Changes
 
@@ -107,3 +118,18 @@ Inbound messages are now mapped with headers `RECEIVED_TOPIC`, `RECEIVED_QOS` an
 The outbound channel adapter now supports expressions for the topic, qos and retained properties; the defaults remain the same.
 
 See <<mqtt>> for more information.
+
+==== STOMP Changes
+
+The STOMP module has been changed to use `ReactorNettyTcpStompClient`, based on the Project Reactor `3.0` and `reactor-netty` extension.
+The `Reactor2TcpStompSessionManager` has been renamed to the `ReactorNettyTcpStompSessionManager` according to the `ReactorNettyTcpStompClient` foundation.
+
+See <<stomp>> for more information.
+
+==== Web Services Changes
+
+- The `WebServiceOutboundGateway` s can now be supplied with an externally configured `WebServiceTemplate` instances.
+
+- The `DefaultSoapHeaderMapper` can now map a `javax.xml.transform.Source` user-defined header to a SOAP header element.
+
+See <<ws>> for more information.

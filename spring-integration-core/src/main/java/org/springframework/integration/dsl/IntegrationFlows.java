@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,21 @@
 package org.springframework.integration.dsl;
 
 import java.util.function.Consumer;
-import java.util.function.Function;
+
+import org.reactivestreams.Publisher;
 
 import org.springframework.integration.channel.DirectChannel;
+import org.springframework.integration.channel.ReactiveChannel;
 import org.springframework.integration.core.MessageSource;
 import org.springframework.integration.dsl.channel.MessageChannelSpec;
 import org.springframework.integration.dsl.support.FixedSubscriberChannelPrototype;
 import org.springframework.integration.dsl.support.MessageChannelReference;
 import org.springframework.integration.endpoint.MessageProducerSupport;
 import org.springframework.integration.endpoint.MethodInvokingMessageSource;
+import org.springframework.integration.gateway.AnnotationGatewayProxyFactoryBean;
+import org.springframework.integration.gateway.GatewayProxyFactoryBean;
 import org.springframework.integration.gateway.MessagingGatewaySupport;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.util.Assert;
 
@@ -77,20 +82,6 @@ public final class IntegrationFlows {
 
 	/**
 	 * Populate the {@link MessageChannel} object to the
-	 * {@link IntegrationFlowBuilder} chain using the fluent API from {@link Channels} factory.
-	 * The {@link org.springframework.integration.dsl.IntegrationFlow} {@code inputChannel}.
-	 * @param channels the {@link Function} to use method chain to configure.
-	 * {@link MessageChannel} via {@link Channels} factory.
-	 * @return new {@link IntegrationFlowBuilder}.
-	 * @see Channels
-	 */
-	public static IntegrationFlowBuilder from(Function<Channels, MessageChannelSpec<?, ?>> channels) {
-		Assert.notNull(channels);
-		return from(channels.apply(new Channels()));
-	}
-
-	/**
-	 * Populate the {@link MessageChannel} object to the
 	 * {@link IntegrationFlowBuilder} chain using the fluent API from {@link MessageChannelSpec}.
 	 * The {@link org.springframework.integration.dsl.IntegrationFlow} {@code inputChannel}.
 	 * @param messageChannelSpec the MessageChannelSpec to populate {@link MessageChannel} instance.
@@ -98,7 +89,7 @@ public final class IntegrationFlows {
 	 * @see org.springframework.integration.dsl.channel.MessageChannels
 	 */
 	public static IntegrationFlowBuilder from(MessageChannelSpec<?, ?> messageChannelSpec) {
-		Assert.notNull(messageChannelSpec);
+		Assert.notNull(messageChannelSpec, "'messageChannelSpec' must not be null");
 		return from(messageChannelSpec.get());
 	}
 
@@ -137,7 +128,7 @@ public final class IntegrationFlows {
 	 */
 	public static IntegrationFlowBuilder from(MessageSourceSpec<?, ? extends MessageSource<?>> messageSourceSpec,
 			Consumer<SourcePollingChannelAdapterSpec> endpointConfigurer) {
-		Assert.notNull(messageSourceSpec);
+		Assert.notNull(messageSourceSpec, "'messageSourceSpec' must not be null");
 		return from(messageSourceSpec.get(), endpointConfigurer, registerComponents(messageSourceSpec));
 	}
 
@@ -167,8 +158,8 @@ public final class IntegrationFlows {
 	 */
 	public static IntegrationFlowBuilder from(Object service, String methodName,
 			Consumer<SourcePollingChannelAdapterSpec> endpointConfigurer) {
-		Assert.notNull(service);
-		Assert.hasText(methodName);
+		Assert.notNull(service, "'service' must not be null");
+		Assert.hasText(methodName, "'methodName' must not be empty");
 		MethodInvokingMessageSource messageSource = new MethodInvokingMessageSource();
 		messageSource.setObject(service);
 		messageSource.setMethodName(methodName);
@@ -274,6 +265,49 @@ public final class IntegrationFlows {
 	 */
 	public static IntegrationFlowBuilder from(MessagingGatewaySupport inboundGateway) {
 		return from(inboundGateway, (IntegrationFlowBuilder) null);
+	}
+
+	/**
+	 * Populate the {@link MessageChannel} to the new {@link IntegrationFlowBuilder}
+	 * chain, which becomes as a {@code requestChannel} for the Messaging Gateway(s) built
+	 * on the provided service interface.
+	 * <p>A gateway proxy bean for provided service interface is registered under a name of
+	 * the {@link IntegrationFlow} bean plus {@code .gateway} suffix.
+	 * @param serviceInterface the class with a
+	 * {@link org.springframework.integration.annotation.MessagingGateway} annotation.
+	 * @return new {@link IntegrationFlowBuilder}.
+	 */
+	public static IntegrationFlowBuilder from(Class<?> serviceInterface) {
+		final DirectChannel gatewayRequestChannel = new DirectChannel();
+
+		GatewayProxyFactoryBean gatewayProxyFactoryBean =
+				new AnnotationGatewayProxyFactoryBean(serviceInterface) {
+
+					@Override
+					protected void onInit() {
+						super.onInit();
+						getGateways()
+								.values()
+								.forEach(gateway ->
+										gateway.setRequestChannel(gatewayRequestChannel));
+					}
+
+				};
+
+		return from(gatewayRequestChannel)
+				.addComponent(gatewayProxyFactoryBean);
+	}
+
+	/**
+	 * Populate a {@link ReactiveChannel} to the {@link IntegrationFlowBuilder} chain
+	 * and subscribe it to the provided {@link Publisher}.
+	 * @param publisher the {@link Publisher} to subscribe to.
+	 * @return new {@link IntegrationFlowBuilder}.
+	 */
+	public static IntegrationFlowBuilder from(Publisher<Message<?>> publisher) {
+		ReactiveChannel reactiveChannel = new ReactiveChannel();
+		reactiveChannel.subscribeTo(publisher);
+		return from((MessageChannel) reactiveChannel);
 	}
 
 	private static IntegrationFlowBuilder from(MessagingGatewaySupport inboundGateway,

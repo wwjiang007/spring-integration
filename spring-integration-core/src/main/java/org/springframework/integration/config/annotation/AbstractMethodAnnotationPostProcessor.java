@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ import org.aopalliance.aop.Advice;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.reactivestreams.Publisher;
-import org.reactivestreams.Subscriber;
 
 import org.springframework.aop.TargetSource;
 import org.springframework.aop.framework.Advised;
@@ -65,7 +64,6 @@ import org.springframework.integration.router.AbstractMessageRouter;
 import org.springframework.integration.scheduling.PollerMetadata;
 import org.springframework.integration.support.channel.BeanFactoryChannelResolver;
 import org.springframework.integration.util.MessagingAnnotationUtils;
-import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHandler;
 import org.springframework.messaging.PollableChannel;
@@ -80,8 +78,6 @@ import org.springframework.util.ClassUtils;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.ObjectUtils;
 import org.springframework.util.StringUtils;
-
-import reactor.core.publisher.DirectProcessor;
 
 /**
  * Base class for Method-level annotation post-processors.
@@ -296,9 +292,14 @@ public abstract class AbstractMethodAnnotationPostProcessor<T extends Annotation
 				inputChannel = this.channelResolver.resolveDestination(inputChannelName);
 			}
 			catch (DestinationResolutionException e) {
-				inputChannel = new DirectChannel();
-				this.beanFactory.registerSingleton(inputChannelName, inputChannel);
-				inputChannel = (MessageChannel) this.beanFactory.initializeBean(inputChannel, inputChannelName);
+				if (e.getCause() instanceof NoSuchBeanDefinitionException) {
+					inputChannel = new DirectChannel();
+					this.beanFactory.registerSingleton(inputChannelName, inputChannel);
+					inputChannel = (MessageChannel) this.beanFactory.initializeBean(inputChannel, inputChannelName);
+				}
+				else {
+					throw e;
+				}
 			}
 			Assert.notNull(inputChannel, "failed to resolve inputChannel '" + inputChannelName + "'");
 
@@ -307,7 +308,6 @@ public abstract class AbstractMethodAnnotationPostProcessor<T extends Annotation
 		return endpoint;
 	}
 
-	@SuppressWarnings("unchecked")
 	protected AbstractEndpoint doCreateEndpoint(MessageHandler handler, MessageChannel inputChannel,
 			List<Annotation> annotations) {
 		AbstractEndpoint endpoint;
@@ -321,17 +321,7 @@ public abstract class AbstractMethodAnnotationPostProcessor<T extends Annotation
 			Assert.state(ObjectUtils.isEmpty(pollers), "A '@Poller' should not be specified for Annotation-based " +
 					"endpoint, since '" + inputChannel + "' is a SubscribableChannel (not pollable).");
 			if (inputChannel instanceof Publisher) {
-				Subscriber<Message<?>> subscriber;
-				if (handler instanceof Subscriber) {
-					subscriber = (Subscriber<Message<?>>) handler;
-				}
-				else {
-					//TODO errorConsumer, completeConsumer
-					DirectProcessor<Message<?>> directProcessor = DirectProcessor.create();
-					directProcessor.doOnNext(handler::handleMessage);
-					subscriber = directProcessor;
-				}
-				endpoint = new ReactiveConsumer(inputChannel, subscriber);
+				endpoint = new ReactiveConsumer(inputChannel, handler);
 			}
 			else {
 				endpoint = new EventDrivenConsumer((SubscribableChannel) inputChannel, handler);

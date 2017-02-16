@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2014 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,11 +27,11 @@ import org.springframework.integration.config.ExpressionFactoryBean;
 import org.springframework.integration.config.xml.AbstractOutboundGatewayParser;
 import org.springframework.integration.config.xml.IntegrationNamespaceUtils;
 import org.springframework.integration.ws.DefaultSoapHeaderMapper;
+import org.springframework.integration.ws.MarshallingWebServiceOutboundGateway;
+import org.springframework.integration.ws.SimpleWebServiceOutboundGateway;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.util.xml.DomUtils;
-import org.springframework.integration.ws.MarshallingWebServiceOutboundGateway;
-import org.springframework.integration.ws.SimpleWebServiceOutboundGateway;
 
 /**
  * Parser for the &lt;outbound-gateway/&gt; element in the 'ws' namespace.
@@ -56,7 +56,7 @@ public class WebServiceOutboundGatewayParser extends AbstractOutboundGatewayPars
 		String uri = element.getAttribute("uri");
 		String destinationProvider = element.getAttribute("destination-provider");
 		List<Element> uriVariableElements = DomUtils.getChildElementsByTagName(element, "uri-variable");
-		if (!(StringUtils.hasText(destinationProvider) ^ StringUtils.hasText(uri))) {
+		if (StringUtils.hasText(destinationProvider) == StringUtils.hasText(uri)) {
 			parserContext.getReaderContext().error(
 					"Exactly one of 'uri' or 'destination-provider' is required.", element);
 		}
@@ -74,9 +74,10 @@ public class WebServiceOutboundGatewayParser extends AbstractOutboundGatewayPars
 				for (Element uriVariableElement : uriVariableElements) {
 					String name = uriVariableElement.getAttribute("name");
 					String expression = uriVariableElement.getAttribute("expression");
-					BeanDefinitionBuilder factoryBeanBuilder = BeanDefinitionBuilder.genericBeanDefinition(ExpressionFactoryBean.class);
+					BeanDefinitionBuilder factoryBeanBuilder =
+							BeanDefinitionBuilder.genericBeanDefinition(ExpressionFactoryBean.class);
 					factoryBeanBuilder.addConstructorArgValue(expression);
-					uriVariableExpressions.put(name,  factoryBeanBuilder.getBeanDefinition());
+					uriVariableExpressions.put(name, factoryBeanBuilder.getBeanDefinition());
 				}
 				builder.addPropertyValue("uriVariableExpressions", uriVariableExpressions);
 			}
@@ -112,11 +113,21 @@ public class WebServiceOutboundGatewayParser extends AbstractOutboundGatewayPars
 				builder.addConstructorArgValue(null);
 			}
 		}
+
+		IntegrationNamespaceUtils.setReferenceIfAttributeDefined(builder, element, "request-callback");
+
+		String webServiceTemplateRef = element.getAttribute("web-service-template");
+
+		if (StringUtils.hasText(webServiceTemplateRef)) {
+			builder.addPropertyReference("webServiceTemplate", webServiceTemplateRef);
+			return;
+		}
+
 		String messageFactoryRef = element.getAttribute("message-factory");
 		if (StringUtils.hasText(messageFactoryRef)) {
 			builder.addConstructorArgReference(messageFactoryRef);
 		}
-		IntegrationNamespaceUtils.setReferenceIfAttributeDefined(builder, element, "request-callback");
+
 		IntegrationNamespaceUtils.setReferenceIfAttributeDefined(builder, element, "fault-message-resolver");
 
 		String messageSenderRef = element.getAttribute("message-sender");

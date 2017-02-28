@@ -33,6 +33,9 @@ See <<annotations>> for more information.
 All the request-reply endpoints (based on `AbstractReplyProducingMessageHandler`) can now start transaction and, therefore, make the whole downstream flow transactional.
 See <<tx-handle-message-advice>> for more information.
 
+The `SmartLifecycleRoleController` now provides methods to obtain status of endpoints in roles.
+See <<endpoint-roles>> for more information.
+
 ==== JMS Changes
 
 Previously, Spring Integration JMS XML configuration used a default bean name `connectionFactory` for the JMS Connection Factory, allowing the property to be omitted from component definitions.
@@ -69,13 +72,23 @@ See <<file-tailing>> for more information.
 The flush predicates for the `FileWritingMessageHandler` now have an additional parameter.
 See <<file-flushing>> for more information.
 
+The file outbound channel adapter (`FileWritingMessageHandler`) now supports the `REPLACE_IF_MODIFIED` `FileExistsMode`.
+
 ==== (S)FTP Changes
 
 The inbound channel adapters now have a property `max-fetch-size` which is used to limit the number of files fetched during a poll when there are no files currently in the local directory.
+They also are configured with a `FileSystemPersistentAcceptOnceFileListFilter` in the `local-filter` by default.
+See <<ftp-inbound>> and <<sftp-inbound>> for more information.
 
 The regex and pattern filters can now be configured to always pass directories.
 This can be useful when using recursion in the outbound gateways.
 See <<ftp-outbound-gateway>> and <<sftp-outbound-gateway>> for more information.
+
+The FTP and SFTP outbound gateways now support the `REPLACE_IF_MODIFIED` `FileExistsMode` when fetching remote files.
+See <<ftp-outbound-gateway>> and <<sftp-outbound-gateway>> for more information.
+
+The (S)FTP streaming inbound channel adapters now add remote file information in a message header.
+See <<ftp-streaming>> and <<sftp-streaming>> for more information.
 
 ==== Integration Properties
 
@@ -99,6 +112,9 @@ See <<amqp-delay>> for more information.
 
 The inbound endpoints now support the Spring AMQP `DirectMessageListenerContainer`.
 See <<amqp-inbound-channel-adapter>> for more information.
+
+Pollable AMQP-backed channels now block the poller thread for the poller's configured `receiveTimeout` (default 1 second).
+See <<amqp-channels>> for more information.
 
 ==== HTTP Changes
 

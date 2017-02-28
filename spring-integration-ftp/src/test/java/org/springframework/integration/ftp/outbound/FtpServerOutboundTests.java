@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2016 the original author or authors.
+ * Copyright 2013-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 package org.springframework.integration.ftp.outbound;
 
+import static java.util.regex.Matcher.quoteReplacement;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
@@ -35,6 +36,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -47,6 +49,7 @@ import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.net.ftp.FTPClient;
 import org.apache.commons.net.ftp.FTPFile;
 import org.hamcrest.Matchers;
@@ -157,20 +160,22 @@ public class FtpServerOutboundTests extends FtpTestSupport {
 	@Test
 	public void testInt2866LocalDirectoryExpressionGET() {
 		String dir = "ftpSource/";
+		long modified = setModifiedOnSource1();
 		this.inboundGet.send(new GenericMessage<Object>(dir + " ftpSource1.txt"));
 		Message<?> result = this.output.receive(1000);
 		assertNotNull(result);
 		File localFile = (File) result.getPayload();
-		assertThat(localFile.getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-				Matchers.containsString(dir.toUpperCase()));
+		assertThat(localFile.getPath().replaceAll(quoteReplacement(File.separator), "/"),
+				containsString(dir.toUpperCase()));
+		assertPreserved(modified, localFile);
 
 		dir = "ftpSource/subFtpSource/";
 		this.inboundGet.send(new GenericMessage<Object>(dir + "subFtpSource1.txt"));
 		result = this.output.receive(1000);
 		assertNotNull(result);
 		localFile = (File) result.getPayload();
-		assertThat(localFile.getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-				Matchers.containsString(dir.toUpperCase()));
+		assertThat(localFile.getPath().replaceAll(quoteReplacement(File.separator), "/"),
+				containsString(dir.toUpperCase()));
 	}
 
 	@Test
@@ -192,6 +197,7 @@ public class FtpServerOutboundTests extends FtpTestSupport {
 	@SuppressWarnings("unchecked")
 	public void testInt2866LocalDirectoryExpressionMGET() {
 		String dir = "ftpSource/";
+		long modified = setModifiedOnSource1();
 		this.inboundMGet.send(new GenericMessage<Object>(dir + "*.txt"));
 		Message<?> result = this.output.receive(1000);
 		assertNotNull(result);
@@ -199,10 +205,14 @@ public class FtpServerOutboundTests extends FtpTestSupport {
 
 		assertThat(localFiles.size(), Matchers.greaterThan(0));
 
+		boolean assertedModified = false;
 		for (File file : localFiles) {
-			assertThat(file.getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-					Matchers.containsString(dir));
+			assertThat(file.getPath().replaceAll(quoteReplacement(File.separator), "/"), containsString(dir));
+			if (file.getPath().contains("localTarget1")) {
+				assertedModified = assertPreserved(modified, file);
+			}
 		}
+		assertTrue(assertedModified);
 
 		dir = "ftpSource/subFtpSource/";
 		this.inboundMGet.send(new GenericMessage<Object>(dir + "*.txt"));
@@ -213,8 +223,7 @@ public class FtpServerOutboundTests extends FtpTestSupport {
 		assertThat(localFiles.size(), Matchers.greaterThan(0));
 
 		for (File file : localFiles) {
-			assertThat(file.getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-					Matchers.containsString(dir));
+			assertThat(file.getPath().replaceAll(quoteReplacement(File.separator), "/"), containsString(dir));
 		}
 	}
 
@@ -240,21 +249,68 @@ public class FtpServerOutboundTests extends FtpTestSupport {
 
 	@Test
 	@SuppressWarnings("unchecked")
-	public void testInt3172LocalDirectoryExpressionMGETRecursive() {
+	public void testInt3172LocalDirectoryExpressionMGETRecursive() throws IOException {
 		String dir = "ftpSource/";
+		long modified = setModifiedOnSource1();
+		File secondRemote = new File(getSourceRemoteDirectory(), "ftpSource2.txt");
+		secondRemote.setLastModified(System.currentTimeMillis() - 1_000_000);
 		this.inboundMGetRecursive.send(new GenericMessage<Object>("*"));
 		Message<?> result = this.output.receive(1000);
 		assertNotNull(result);
 		List<File> localFiles = (List<File>) result.getPayload();
 		assertEquals(3, localFiles.size());
 
+		boolean assertedModified = false;
 		for (File file : localFiles) {
-			assertThat(file.getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-					Matchers.containsString(dir));
+			assertThat(file.getPath().replaceAll(quoteReplacement(File.separator), "/"),
+					containsString(dir));
+			if (file.getPath().contains("localTarget1")) {
+				assertedModified = assertPreserved(modified, file);
+			}
 		}
-		assertThat(localFiles.get(2).getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-				Matchers.containsString(dir + "subFtpSource"));
+		assertTrue(assertedModified);
+		assertThat(localFiles.get(2).getPath().replaceAll(quoteReplacement(File.separator), "/"),
+				containsString(dir + "subFtpSource"));
 
+		File secondTarget = new File(getTargetLocalDirectory() + File.separator + "ftpSource", "localTarget2.txt");
+		ByteArrayOutputStream remoteContents = new ByteArrayOutputStream();
+		ByteArrayOutputStream localContents = new ByteArrayOutputStream();
+		FileUtils.copyFile(secondRemote, remoteContents);
+		FileUtils.copyFile(secondTarget, localContents);
+		String localAsString = new String(localContents.toByteArray());
+		assertEquals(new String(remoteContents.toByteArray()), localAsString);
+		long oldLastModified = secondRemote.lastModified();
+		FileUtils.copyInputStreamToFile(new ByteArrayInputStream("junk".getBytes()), secondRemote);
+		long newLastModified = secondRemote.lastModified();
+		secondRemote.setLastModified(oldLastModified);
+		this.inboundMGetRecursive.send(new GenericMessage<Object>("*"));
+		this.output.receive(0);
+		localContents = new ByteArrayOutputStream();
+		FileUtils.copyFile(secondTarget, localContents);
+		assertEquals(localAsString, new String(localContents.toByteArray()));
+		secondRemote.setLastModified(newLastModified);
+		this.inboundMGetRecursive.send(new GenericMessage<Object>("*"));
+		this.output.receive(0);
+		localContents = new ByteArrayOutputStream();
+		FileUtils.copyFile(secondTarget, localContents);
+		assertEquals("junk", new String(localContents.toByteArray()));
+		// restore the remote file contents
+		FileUtils.copyInputStreamToFile(new ByteArrayInputStream(localAsString.getBytes()), secondRemote);
+	}
+
+	private long setModifiedOnSource1() {
+		File firstRemote = new File(getSourceRemoteDirectory(), " ftpSource1.txt");
+		firstRemote.setLastModified(System.currentTimeMillis() - 1_000_000);
+		long modified = firstRemote.lastModified();
+		assertTrue(modified > 0);
+		return modified;
+	}
+
+	private boolean assertPreserved(long modified, File file) {
+		// ftp only has 1 minute resolution
+		assertTrue("lastModified wrong by " + (modified - file.lastModified()),
+				Math.abs(file.lastModified() - modified) < 61_000);
+		return true;
 	}
 
 	@Test
@@ -269,11 +325,11 @@ public class FtpServerOutboundTests extends FtpTestSupport {
 		assertEquals(2, localFiles.size());
 
 		for (File file : localFiles) {
-			assertThat(file.getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-					Matchers.containsString(dir));
+			assertThat(file.getPath().replaceAll(quoteReplacement(File.separator), "/"),
+					containsString(dir));
 		}
-		assertThat(localFiles.get(1).getPath().replaceAll(java.util.regex.Matcher.quoteReplacement(File.separator), "/"),
-				Matchers.containsString(dir + "subFtpSource"));
+		assertThat(localFiles.get(1).getPath().replaceAll(quoteReplacement(File.separator), "/"),
+				containsString(dir + "subFtpSource"));
 
 	}
 

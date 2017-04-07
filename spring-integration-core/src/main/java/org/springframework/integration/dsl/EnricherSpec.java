@@ -21,6 +21,8 @@ import java.util.Map;
 import java.util.function.Function;
 
 import org.springframework.expression.Expression;
+import org.springframework.integration.channel.DirectChannel;
+import org.springframework.integration.config.ConsumerEndpointFactoryBean;
 import org.springframework.integration.expression.FunctionExpression;
 import org.springframework.integration.expression.ValueExpression;
 import org.springframework.integration.transformer.ContentEnricher;
@@ -32,17 +34,18 @@ import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.util.Assert;
 
+import reactor.util.function.Tuple2;
+
 /**
- * The {@link MessageHandlerSpec} implementation for the {@link ContentEnricher}.
+ * A {@link ConsumerEndpointSpec} extension for the {@link ContentEnricher}.
  *
  * @author Artem Bilan
  * @author Tim Ysewyn
+ * @author Ian Bondoc
  *
  * @since 5.0
  */
-public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnricher> {
-
-	private final ContentEnricher enricher = new ContentEnricher();
+public class EnricherSpec extends ConsumerEndpointSpec<EnricherSpec, ContentEnricher> {
 
 	private final Map<String, Expression> propertyExpressions = new HashMap<String, Expression>();
 
@@ -50,7 +53,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 			new HashMap<String, HeaderValueMessageProcessor<?>>();
 
 	EnricherSpec() {
-		super();
+		super(new ContentEnricher());
 	}
 
 	/**
@@ -59,7 +62,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setRequestChannel(MessageChannel)
 	 */
 	public EnricherSpec requestChannel(MessageChannel requestChannel) {
-		this.enricher.setRequestChannel(requestChannel);
+		this.handler.setRequestChannel(requestChannel);
 		return _this();
 	}
 
@@ -69,7 +72,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setRequestChannelName(String)
 	 */
 	public EnricherSpec requestChannel(String requestChannel) {
-		this.enricher.setRequestChannelName(requestChannel);
+		this.handler.setRequestChannelName(requestChannel);
 		return _this();
 	}
 
@@ -79,7 +82,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setReplyChannel(MessageChannel)
 	 */
 	public EnricherSpec replyChannel(MessageChannel replyChannel) {
-		this.enricher.setReplyChannel(replyChannel);
+		this.handler.setReplyChannel(replyChannel);
 		return _this();
 	}
 
@@ -89,7 +92,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setReplyChannelName(String)
 	 */
 	public EnricherSpec replyChannel(String replyChannel) {
-		this.enricher.setReplyChannelName(replyChannel);
+		this.handler.setReplyChannelName(replyChannel);
 		return _this();
 	}
 
@@ -99,7 +102,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setRequestTimeout(Long)
 	 */
 	public EnricherSpec requestTimeout(Long requestTimeout) {
-		this.enricher.setRequestTimeout(requestTimeout);
+		this.handler.setRequestTimeout(requestTimeout);
 		return _this();
 	}
 
@@ -109,7 +112,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setReplyTimeout(Long)
 	 */
 	public EnricherSpec replyTimeout(Long replyTimeout) {
-		this.enricher.setReplyTimeout(replyTimeout);
+		this.handler.setReplyTimeout(replyTimeout);
 		return _this();
 	}
 
@@ -119,7 +122,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setRequestPayloadExpression(Expression)
 	 */
 	public EnricherSpec requestPayloadExpression(String requestPayloadExpression) {
-		this.enricher.setRequestPayloadExpression(PARSER.parseExpression(requestPayloadExpression));
+		this.handler.setRequestPayloadExpression(PARSER.parseExpression(requestPayloadExpression));
 		return _this();
 	}
 
@@ -131,8 +134,25 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see FunctionExpression
 	 */
 	public <P> EnricherSpec requestPayload(Function<Message<P>, ?> requestPayloadFunction) {
-		this.enricher.setRequestPayloadExpression(new FunctionExpression<>(requestPayloadFunction));
+		this.handler.setRequestPayloadExpression(new FunctionExpression<>(requestPayloadFunction));
 		return _this();
+	}
+
+	/**
+	 * The request sub-flow.
+	 * @param subFlow the subFlowDefinition
+	 * @return the enricher spec
+	 */
+	public EnricherSpec requestSubFlow(IntegrationFlow subFlow) {
+		Assert.notNull(subFlow, "'subFlow' must not be null");
+
+		DirectChannel requestChannel = new DirectChannel();
+		IntegrationFlowBuilder flowBuilder = IntegrationFlows.from(requestChannel);
+		subFlow.configure(flowBuilder);
+
+		this.componentsToRegister.add(flowBuilder.get());
+
+		return requestChannel(requestChannel);
 	}
 
 	/**
@@ -141,7 +161,7 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 	 * @see ContentEnricher#setShouldClonePayload(boolean)
 	 */
 	public EnricherSpec shouldClonePayload(boolean shouldClonePayload) {
-		this.enricher.setShouldClonePayload(shouldClonePayload);
+		this.handler.setShouldClonePayload(shouldClonePayload);
 		return _this();
 	}
 
@@ -279,15 +299,16 @@ public class EnricherSpec extends MessageHandlerSpec<EnricherSpec, ContentEnrich
 		return _this();
 	}
 
+
 	@Override
-	protected ContentEnricher doGet() {
+	protected Tuple2<ConsumerEndpointFactoryBean, ContentEnricher> doGet() {
 		if (!this.propertyExpressions.isEmpty()) {
-			this.enricher.setPropertyExpressions(this.propertyExpressions);
+			this.handler.setPropertyExpressions(this.propertyExpressions);
 		}
 		if (!this.headerExpressions.isEmpty()) {
-			this.enricher.setHeaderExpressions(this.headerExpressions);
+			this.handler.setHeaderExpressions(this.headerExpressions);
 		}
-		return this.enricher;
+		return super.doGet();
 	}
 
 }

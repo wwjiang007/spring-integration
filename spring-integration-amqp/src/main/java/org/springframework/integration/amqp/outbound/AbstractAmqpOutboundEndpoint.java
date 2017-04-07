@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2016-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,6 +42,8 @@ import org.springframework.util.StringUtils;
 
 /**
  * @author Gary Russell
+ * @author Artem Bilan
+ *
  * @since 4.3
  *
  */
@@ -82,11 +84,31 @@ public abstract class AbstractAmqpOutboundEndpoint extends AbstractReplyProducin
 
 	private volatile ExpressionEvaluatingMessageProcessor<Integer> delayGenerator;
 
+	private boolean headersMappedLast;
+
 	private volatile boolean running;
 
 	public void setHeaderMapper(AmqpHeaderMapper headerMapper) {
 		Assert.notNull(headerMapper, "headerMapper must not be null");
 		this.headerMapper = headerMapper;
+	}
+
+	/**
+	 * When mapping headers for the outbound message, determine whether the headers are
+	 * mapped before the message is converted, or afterwards. This only affects headers
+	 * that might be added by the message converter. When false, the converter's headers
+	 * win; when true, any headers added by the converter will be overridden (if the
+	 * source message has a header that maps to those headers). You might wish to set this
+	 * to true, for example, when using a
+	 * {@link org.springframework.amqp.support.converter.SimpleMessageConverter} with a
+	 * String payload that contains json; the converter will set the content type to
+	 * {@code text/plain} which can be overridden to {@code application/json} by setting
+	 * the {@link AmqpHeaders#CONTENT_TYPE} message header. Default: false.
+	 * @param headersMappedLast true if headers are mapped after conversion.
+	 * @since 5.0
+	 */
+	public void setHeadersMappedLast(boolean headersMappedLast) {
+		this.headersMappedLast = headersMappedLast;
 	}
 
 	public void setExchangeName(String exchangeName) {
@@ -291,6 +313,10 @@ public abstract class AbstractAmqpOutboundEndpoint extends AbstractReplyProducin
 		return this.lazyConnect;
 	}
 
+	protected boolean isHeadersMappedLast() {
+		return this.headersMappedLast;
+	}
+
 	@Override
 	protected final void doInit() {
 		Assert.state(this.exchangeNameExpression == null || this.exchangeName == null,
@@ -421,7 +447,7 @@ public abstract class AbstractAmqpOutboundEndpoint extends AbstractReplyProducin
 		}
 	}
 
-	protected Message<?> buildReplyMessage(MessageConverter converter,
+	protected AbstractIntegrationMessageBuilder<?> buildReply(MessageConverter converter,
 			org.springframework.amqp.core.Message amqpReplyMessage) {
 		Object replyObject = converter.fromMessage(amqpReplyMessage);
 		AbstractIntegrationMessageBuilder<?> builder = (replyObject instanceof Message)
@@ -429,7 +455,7 @@ public abstract class AbstractAmqpOutboundEndpoint extends AbstractReplyProducin
 				: this.getMessageBuilderFactory().withPayload(replyObject);
 		Map<String, ?> headers = getHeaderMapper().toHeadersFromReply(amqpReplyMessage.getMessageProperties());
 		builder.copyHeadersIfAbsent(headers);
-		return builder.build();
+		return builder;
 	}
 
 	protected Message<?> buildReturnedMessage(org.springframework.amqp.core.Message message,

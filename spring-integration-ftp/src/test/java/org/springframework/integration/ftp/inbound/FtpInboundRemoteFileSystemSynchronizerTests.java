@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,14 +74,7 @@ public class FtpInboundRemoteFileSystemSynchronizerTests {
 	@Before
 	@After
 	public void cleanup() {
-		File file = new File("test");
-		if (file.exists()) {
-			String[] files = file.list();
-			for (String fileName : files) {
-				new File(file, fileName).delete();
-			}
-			file.delete();
-		}
+		recursiveDelete(new File("test"));
 	}
 
 	@Test
@@ -110,7 +103,7 @@ public class FtpInboundRemoteFileSystemSynchronizerTests {
 		synchronizer.setFilter(filter);
 
 		ExpressionParser expressionParser = new SpelExpressionParser(new SpelParserConfiguration(true, true));
-		Expression expression = expressionParser.parseExpression("#this.toUpperCase() + '.a'");
+		Expression expression = expressionParser.parseExpression("'subdir/' + #this.toUpperCase() + '.a'");
 		synchronizer.setLocalFilenameGeneratorExpression(expression);
 		synchronizer.setBeanFactory(mock(BeanFactory.class));
 		synchronizer.afterPropertiesSet();
@@ -127,7 +120,9 @@ public class FtpInboundRemoteFileSystemSynchronizerTests {
 		localFileListFilter.addFilter(localAcceptOnceFilter);
 		ms.setLocalFilter(localFileListFilter);
 		ms.afterPropertiesSet();
-		Message<File> atestFile =  ms.receive();
+		ms.start();
+
+		Message<File> atestFile = ms.receive();
 		assertNotNull(atestFile);
 		assertEquals("A.TEST.a", atestFile.getPayload().getName());
 		// The test remote files are created with the current timestamp + 1 day.
@@ -135,32 +130,79 @@ public class FtpInboundRemoteFileSystemSynchronizerTests {
 
 		assertEquals("A.TEST.a", atestFile.getHeaders().get(FileHeaders.FILENAME));
 
-		Message<File> btestFile =  ms.receive();
+		Message<File> btestFile = ms.receive();
 		assertNotNull(btestFile);
 		assertEquals("B.TEST.a", btestFile.getPayload().getName());
 		// The test remote files are created with the current timestamp + 1 day.
 		assertThat(atestFile.getPayload().lastModified(), Matchers.greaterThan(System.currentTimeMillis()));
 
-		Message<File> nothing =  ms.receive();
+		Message<File> nothing = ms.receive();
 		assertNull(nothing);
 
 		// two times because on the third receive (above) the internal queue will be empty, so it will attempt
 		verify(synchronizer, times(2)).synchronizeToLocalDirectory(localDirectory, Integer.MIN_VALUE);
 
-		assertTrue(new File("test/A.TEST.a").exists());
-		assertTrue(new File("test/B.TEST.a").exists());
+		assertTrue(new File("test/subdir/A.TEST.a").exists());
+		assertTrue(new File("test/subdir/B.TEST.a").exists());
 
 		TestUtils.getPropertyValue(localAcceptOnceFilter, "seenSet", Collection.class).clear();
 
-		new File("test/A.TEST.a").delete();
-		new File("test/B.TEST.a").delete();
+		new File("test/subdir/A.TEST.a").delete();
+		new File("test/subdir/B.TEST.a").delete();
 		// the remote filter should prevent a re-fetch
-		nothing =  ms.receive();
+		nothing = ms.receive();
 		assertNull(nothing);
 
 		ms.stop();
 		verify(synchronizer).close();
 		verify(store).close();
+	}
+
+
+	@Test
+	public void testSyncRemoteFileOnlyOnceByDefault() throws Exception {
+		File localDirectory = new File("test");
+		localDirectory.mkdir();
+
+		TestFtpSessionFactory ftpSessionFactory = new TestFtpSessionFactory();
+		ftpSessionFactory.setUsername("kermit");
+		ftpSessionFactory.setPassword("frog");
+		FtpInboundFileSynchronizer synchronizer = spy(new FtpInboundFileSynchronizer(ftpSessionFactory));
+		synchronizer.setRemoteDirectory("remote-test-dir");
+
+		synchronizer.setBeanFactory(mock(BeanFactory.class));
+		synchronizer.afterPropertiesSet();
+
+		synchronizer.synchronizeToLocalDirectory(localDirectory);
+
+
+		File[] files = localDirectory.listFiles();
+		assertEquals(3, files.length);
+
+		for (File f : files) {
+			f.delete();
+		}
+
+		synchronizer.synchronizeToLocalDirectory(localDirectory);
+
+		assertEquals(0, localDirectory.list().length);
+	}
+
+	private static void recursiveDelete(File file) {
+		if (file != null && file.exists()) {
+			File[] files = file.listFiles();
+			if (files != null) {
+				for (File f : files) {
+					if (f.isDirectory()) {
+						recursiveDelete(f);
+					}
+					else {
+						f.delete();
+					}
+				}
+			}
+			file.delete();
+		}
 	}
 
 
@@ -198,7 +240,8 @@ public class FtpInboundRemoteFileSystemSynchronizerTests {
 					when(ftpClient.retrieveFile(Mockito.eq("remote-test-dir/" + fileName),
 							Mockito.any(OutputStream.class))).thenReturn(true);
 				}
-				when(ftpClient.listFiles("remote-test-dir")).thenReturn(ftpFiles.toArray(new FTPFile[ftpFiles.size()]));
+				when(ftpClient.listFiles("remote-test-dir"))
+						.thenReturn(ftpFiles.toArray(new FTPFile[ftpFiles.size()]));
 				when(ftpClient.deleteFile(Mockito.anyString())).thenReturn(true);
 				return ftpClient;
 			}
@@ -206,6 +249,7 @@ public class FtpInboundRemoteFileSystemSynchronizerTests {
 				throw new RuntimeException("Failed to create mock client", e);
 			}
 		}
+
 	}
 
 }

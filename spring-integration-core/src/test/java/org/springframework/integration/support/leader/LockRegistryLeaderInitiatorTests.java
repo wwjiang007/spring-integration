@@ -19,9 +19,16 @@ package org.springframework.integration.support.leader;
 import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.mock;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Lock;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -36,6 +43,7 @@ import org.springframework.integration.support.locks.LockRegistry;
 /**
  * @author Dave Syer
  * @author Artem Bilan
+ * @author Vedran Pavic
  *
  * @since 4.3.1
  */
@@ -45,9 +53,9 @@ public class LockRegistryLeaderInitiatorTests {
 
 	private CountDownLatch revoked;
 
-	private LockRegistry registry = new DefaultLockRegistry();
+	private final LockRegistry registry = new DefaultLockRegistry();
 
-	private LockRegistryLeaderInitiator initiator =
+	private final LockRegistryLeaderInitiator initiator =
 			new LockRegistryLeaderInitiator(this.registry, new DefaultCandidate());
 
 	@Before
@@ -62,12 +70,12 @@ public class LockRegistryLeaderInitiatorTests {
 		assertThat(this.initiator.getContext().isLeader(), is(false));
 		this.initiator.start();
 		assertThat(this.initiator.isRunning(), is(true));
-		this.granted.await(10, TimeUnit.SECONDS);
+		assertTrue(this.granted.await(10, TimeUnit.SECONDS));
 		assertThat(this.initiator.getContext().isLeader(), is(true));
 		Thread.sleep(200L);
 		assertThat(this.initiator.getContext().isLeader(), is(true));
 		this.initiator.stop();
-		this.revoked.await(10, TimeUnit.SECONDS);
+		assertTrue(this.revoked.await(10, TimeUnit.SECONDS));
 		assertThat(this.initiator.getContext().isLeader(), is(false));
 	}
 
@@ -76,7 +84,7 @@ public class LockRegistryLeaderInitiatorTests {
 		assertThat(this.initiator.getContext().isLeader(), is(false));
 		this.initiator.start();
 		assertThat(this.initiator.isRunning(), is(true));
-		this.granted.await(10, TimeUnit.SECONDS);
+		assertTrue(this.granted.await(10, TimeUnit.SECONDS));
 		assertThat(this.initiator.getContext().isLeader(), is(true));
 		this.initiator.getContext().yield();
 		assertThat(this.revoked.await(10, TimeUnit.SECONDS), is(true));
@@ -90,11 +98,12 @@ public class LockRegistryLeaderInitiatorTests {
 		CountDownLatch other = new CountDownLatch(1);
 		another.setLeaderEventPublisher(new CountingPublisher(other));
 		this.initiator.start();
-		assertThat(this.granted.await(10, TimeUnit.SECONDS), is(true));
+		assertThat(this.granted.await(20, TimeUnit.SECONDS), is(true));
 		another.start();
 		this.initiator.stop();
-		assertThat(other.await(10, TimeUnit.SECONDS), is(true));
+		assertThat(other.await(20, TimeUnit.SECONDS), is(true));
 		assertThat(another.getContext().isLeader(), is(true));
+		another.stop();
 	}
 
 	@Test
@@ -123,6 +132,63 @@ public class LockRegistryLeaderInitiatorTests {
 		assertTrue(initiator.getContext().isLeader());
 
 		initiator.stop();
+	}
+
+	@Test
+	public void competingWithLock() throws Exception {
+		// switch used to toggle which registry obtains lock
+		AtomicBoolean firstLocked = new AtomicBoolean(true);
+
+		// set up first registry instance - this one will be able to obtain lock initially
+		LockRegistry firstRegistry = mock(LockRegistry.class);
+		Lock firstLock = mock(Lock.class);
+		given(firstRegistry.obtain(anyString())).willReturn(firstLock);
+		given(firstLock.tryLock(anyLong(), any(TimeUnit.class))).willAnswer(i -> firstLocked.get());
+
+		// set up first initiator instance using first LockRegistry
+		LockRegistryLeaderInitiator first =
+				new LockRegistryLeaderInitiator(firstRegistry, new DefaultCandidate());
+		CountDownLatch firstGranted = new CountDownLatch(1);
+		CountDownLatch firstRevoked = new CountDownLatch(1);
+		first.setHeartBeatMillis(10);
+		first.setBusyWaitMillis(1);
+		first.setLeaderEventPublisher(new CountingPublisher(firstGranted, firstRevoked));
+
+		// set up second registry instance - this one will NOT be able to obtain lock initially
+		LockRegistry secondRegistry = mock(LockRegistry.class);
+		Lock secondLock = mock(Lock.class);
+		given(secondRegistry.obtain(anyString())).willReturn(secondLock);
+		given(secondLock.tryLock(anyLong(), any(TimeUnit.class))).willAnswer(i -> !firstLocked.get());
+
+		// set up second initiator instance using second LockRegistry
+		LockRegistryLeaderInitiator second =
+				new LockRegistryLeaderInitiator(secondRegistry, new DefaultCandidate());
+		CountDownLatch secondGranted = new CountDownLatch(1);
+		CountDownLatch secondRevoked = new CountDownLatch(1);
+		second.setHeartBeatMillis(10);
+		second.setBusyWaitMillis(1);
+		second.setLeaderEventPublisher(new CountingPublisher(secondGranted, secondRevoked));
+
+		// start initiators
+		first.start();
+		second.start();
+
+		// first initiator should lead and publish granted event
+		assertThat(firstGranted.await(10, TimeUnit.SECONDS), is(true));
+		assertThat(first.getContext().isLeader(), is(true));
+		assertThat(second.getContext().isLeader(), is(false));
+
+		// simulate first registry instance unable to obtain lock, for example due to lock timeout
+		firstLocked.set(false);
+
+		// second initiator should take lead and publish granted event, first initiator should publish revoked event
+		assertThat(secondGranted.await(10, TimeUnit.SECONDS), is(true));
+		assertThat(firstRevoked.await(10, TimeUnit.SECONDS), is(true));
+		assertThat(second.getContext().isLeader(), is(true));
+		assertThat(first.getContext().isLeader(), is(false));
+
+		first.stop();
+		second.stop();
 	}
 
 	private static class CountingPublisher implements LeaderEventPublisher {

@@ -17,8 +17,11 @@
 package org.springframework.integration.configuration;
 
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.instanceOf;
+import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -37,6 +40,7 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -46,6 +50,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.aopalliance.intercept.MethodInterceptor;
 import org.apache.commons.logging.Log;
+import org.hamcrest.BaseMatcher;
+import org.hamcrest.Description;
 import org.hamcrest.Matchers;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -66,6 +72,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.ImportResource;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.serializer.support.SerializingConverter;
+import org.springframework.expression.EvaluationContext;
 import org.springframework.integration.annotation.Aggregator;
 import org.springframework.integration.annotation.BridgeFrom;
 import org.springframework.integration.annotation.BridgeTo;
@@ -79,6 +86,7 @@ import org.springframework.integration.annotation.Publisher;
 import org.springframework.integration.annotation.Role;
 import org.springframework.integration.annotation.ServiceActivator;
 import org.springframework.integration.annotation.Transformer;
+import org.springframework.integration.annotation.UseSpelInvoker;
 import org.springframework.integration.channel.AbstractMessageChannel;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.channel.NullChannel;
@@ -90,14 +98,17 @@ import org.springframework.integration.config.EnablePublisher;
 import org.springframework.integration.config.ExpressionControlBusFactoryBean;
 import org.springframework.integration.config.GlobalChannelInterceptor;
 import org.springframework.integration.config.IntegrationConverter;
+import org.springframework.integration.config.SpelFunctionFactoryBean;
 import org.springframework.integration.core.MessageSource;
 import org.springframework.integration.core.MessagingTemplate;
 import org.springframework.integration.endpoint.AbstractEndpoint;
 import org.springframework.integration.endpoint.MethodInvokingMessageSource;
 import org.springframework.integration.endpoint.PollingConsumer;
+import org.springframework.integration.expression.SpelPropertyAccessorRegistrar;
 import org.springframework.integration.gateway.GatewayProxyFactoryBean;
 import org.springframework.integration.history.MessageHistory;
 import org.springframework.integration.history.MessageHistoryConfigurer;
+import org.springframework.integration.json.JsonPropertyAccessor;
 import org.springframework.integration.scheduling.PollerMetadata;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.integration.support.MutableMessageBuilder;
@@ -124,6 +135,7 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.test.context.support.AnnotationConfigContextLoader;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.MultiValueMap;
 
 import reactor.core.publisher.Flux;
@@ -429,8 +441,23 @@ public class EnableIntegrationTests {
 	@Test
 	public void testMessagingGateway() throws InterruptedException {
 		String payload = "bar";
-		assertEquals(payload.toUpperCase(), this.testGateway.echo(payload));
-		assertEquals(payload.toUpperCase() + "2", this.testGateway2.echo2(payload));
+		String result = this.testGateway.echo(payload);
+		assertEquals(payload.toUpperCase(), result.substring(0, payload.length()));
+		assertThat(result, containsString("InvocableHandlerMethod"));
+		assertThat(result, not(containsString("SpelExpression")));
+		result = this.testGateway2.echo2(payload);
+		assertNotNull(result);
+		assertEquals(payload.toUpperCase() + "2", result.substring(0, payload.length() + 1));
+		assertThat(result, not(containsString("InvocableHandlerMethod")));
+		assertThat(result, containsString("SpelExpression"));
+		assertThat(result, containsString("CompoundExpression.getValueInternal"));
+		assertNotNull(this.testGateway2.echo2("baz"));
+		result = this.testGateway2.echo2("baz"); // third one should be compiled
+		assertNotNull(result);
+		assertEquals("BAZ2", result.substring(0, 4));
+		assertThat(result, not(containsString("InvocableHandlerMethod")));
+		assertThat(result, containsString("SpelExpression"));
+		assertThat(result, is(new RegexMatcher<String>(".+Ex\\d.getValue\\(.+")));
 		this.testGateway.sendAsync("foo");
 		assertTrue(this.asyncAnnotationProcessLatch.await(1, TimeUnit.SECONDS));
 		assertNotSame(Thread.currentThread(), this.asyncAnnotationProcessThread.get());
@@ -673,6 +700,16 @@ public class EnableIntegrationTests {
 		assertNotNull(receive);
 		assertEquals("bar", receive.getPayload());
 		this.autoCreatedChannelMessageSourceAdapter.stop();
+	}
+
+	@Test
+	public void testIntegrationEvaluationContextCustomization() {
+		EvaluationContext evaluationContext = this.context.getBean(EvaluationContext.class);
+		List<?> propertyAccessors = TestUtils.getPropertyValue(evaluationContext, "propertyAccessors", List.class);
+		assertThat(propertyAccessors.get(0), instanceOf(JsonPropertyAccessor.class));
+		Map<?, ?> variables = TestUtils.getPropertyValue(evaluationContext, "variables", Map.class);
+		Object testSpelFunction = variables.get("testSpelFunction");
+		assertEquals(ClassUtils.getStaticMethod(TestSpelFunction.class, "bar", Object.class), testSpelFunction);
 	}
 
 	@Configuration
@@ -1069,6 +1106,16 @@ public class EnableIntegrationTests {
 			return new AnnotationTestServiceImpl();
 		}
 
+		@Bean
+		public SpelFunctionFactoryBean testSpelFunction() {
+			return new SpelFunctionFactoryBean(TestSpelFunction.class, "bar");
+		}
+
+		@Bean
+		public SpelPropertyAccessorRegistrar spelPropertyAccessorRegistrar() {
+			return new SpelPropertyAccessorRegistrar(new JsonPropertyAccessor());
+		}
+
 	}
 
 	@Configuration
@@ -1204,17 +1251,18 @@ public class EnableIntegrationTests {
 			assertEquals("FOO", message.getHeaders().get("foo"));
 			assertTrue(message.getHeaders().containsKey("calledMethod"));
 			assertEquals("echo", message.getHeaders().get("calledMethod"));
-			return this.handle(message.getPayload());
+			return this.handle(message.getPayload()) + Arrays.asList(new Throwable().getStackTrace()).toString();
 		}
 
 		@Override
 		@Transformer(inputChannel = "gatewayChannel2")
+		@UseSpelInvoker(compilerMode = "${xxxxxxxx:IMMEDIATE}")
 		public String transform2(Message<String> message) {
 			assertTrue(message.getHeaders().containsKey("foo"));
 			assertEquals("FOO", message.getHeaders().get("foo"));
 			assertTrue(message.getHeaders().containsKey("calledMethod"));
 			assertEquals("echo2", message.getHeaders().get("calledMethod"));
-			return this.handle(message.getPayload()) + "2";
+			return this.handle(message.getPayload()) + "2" + Arrays.asList(new Throwable().getStackTrace()).toString();
 		}
 
 		@Override
@@ -1571,5 +1619,33 @@ public class EnableIntegrationTests {
 	// Error because the annotation is on a class; it must be on an interface
 //	@MessagingGateway(defaultRequestChannel = "gatewayChannel", defaultHeaders = @GatewayHeader(name = "foo", value = "FOO"))
 //	public static class TestGateway2 { }
+
+
+	public static class TestSpelFunction {
+
+		public static Object bar(Object o) {
+			return o;
+		}
+
+	}
+
+	public class RegexMatcher<T> extends BaseMatcher<T> {
+
+		private final String regex;
+
+		public RegexMatcher(String regex) {
+			this.regex = regex;
+		}
+
+		public boolean matches(Object o) {
+			return ((String) o).matches(regex);
+
+		}
+
+		public void describeTo(Description description) {
+			description.appendText("matches regex=");
+		}
+
+	}
 
 }

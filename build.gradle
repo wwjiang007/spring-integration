@@ -89,7 +89,7 @@ subprojects { subproject ->
 	ext {
 		activeMqVersion = '5.14.3'
 		aspectjVersion = '1.8.9'
-		apacheSshdVersion = '0.14.0'
+		apacheSshdVersion = '1.4.0'
 		boonVersion = '0.33'
 		chronicleVersion = '3.5.3'
 		commonsDbcpVersion = '1.4'
@@ -124,21 +124,21 @@ subprojects { subproject ->
 		mysqlVersion = '5.1.34'
 		pahoMqttClientVersion = '1.0.2'
 		postgresVersion = '9.1-901-1.jdbc4'
-		reactorNettyVersion = '0.6.0.RELEASE'
-		reactorVersion = '3.0.4.RELEASE'
+		reactorNettyVersion = '0.6.2.RELEASE'
+		reactorVersion = '3.0.6.RELEASE'
 		romeToolsVersion = '1.7.0'
 		servletApiVersion = '3.1.0'
 		slf4jVersion = "1.7.21"
 		smackVersion = '4.1.7'
-		springAmqpVersion = project.hasProperty('springAmqpVersion') ? project.springAmqpVersion : '2.0.0.BUILD-SNAPSHOT'
-		springDataJpaVersion = '2.0.0.BUILD-SNAPSHOT'
-		springDataMongoVersion = '2.0.0.BUILD-SNAPSHOT'
-		springDataRedisVersion = '2.0.0.BUILD-SNAPSHOT'
-		springGemfireVersion = '2.0.0.BUILD-SNAPSHOT'
-		springSecurityVersion = '4.2.2.BUILD-SNAPSHOT'
+		springAmqpVersion = project.hasProperty('springAmqpVersion') ? project.springAmqpVersion : '2.0.0.M3'
+		springDataJpaVersion = '2.0.0.M2'
+		springDataMongoVersion = '2.0.0.M2'
+		springDataRedisVersion = '2.0.0.M2'
+		springGemfireVersion = '2.0.0.M2'
+		springSecurityVersion = '4.2.2.RELEASE'
 		springSocialTwitterVersion = '2.0.0.M1'
 		springRetryVersion = '1.2.0.RELEASE'
-		springVersion = project.hasProperty('springVersion') ? project.springVersion : '5.0.0.BUILD-SNAPSHOT'
+		springVersion = project.hasProperty('springVersion') ? project.springVersion : '5.0.0.M5'
 		springWsVersion = '2.4.0.RELEASE'
 		tomcatVersion = "8.5.9"
 		xmlUnitVersion = '1.6'
@@ -157,8 +157,8 @@ subprojects { subproject ->
 
 	// dependencies that are common across all java projects
 	dependencies {
-		if (!(subproject.name ==~ /.*-test/)) {
-			testCompile project(":spring-integration-test")
+		if (!(subproject.name ==~ /.*-test.*/)) {
+			testCompile project(":spring-integration-test-support")
 		}
 
 		testRuntime "org.slf4j:slf4j-log4j12:$slf4jVersion"
@@ -256,7 +256,7 @@ subprojects { subproject ->
 	build.dependsOn jacocoTestReport
 }
 
-project('spring-integration-test') {
+project('spring-integration-test-support') {
 	description = 'Spring Integration Test Support - **No SI Dependencies Allowed**'
 	dependencies {
 		compile ("junit:junit:$junitVersion") {
@@ -389,8 +389,10 @@ project('spring-integration-http') {
 	dependencies {
 		compile project(":spring-integration-core")
 		compile "org.springframework:spring-webmvc:$springVersion"
+		compile "org.springframework:spring-webflux:$springVersion"
 		compile ("javax.servlet:javax.servlet-api:$servletApiVersion", provided)
 		compile ("com.rometools:rome:$romeToolsVersion", optional)
+		compile ("io.projectreactor.ipc:reactor-netty:$reactorNettyVersion" , optional)
 
 		testCompile project(":spring-integration-security")
 		testCompile "org.springframework.security:spring-security-config:$springSecurityVersion"
@@ -612,6 +614,14 @@ project('spring-integration-syslog') {
 	}
 }
 
+project('spring-integration-test') {
+	description = 'Spring Integration Testing Framework'
+	dependencies {
+		compile project(":spring-integration-core")
+		compile project(":spring-integration-test-support")
+	}
+}
+
 project('spring-integration-twitter') {
 	description = 'Spring Integration Twitter Support'
 	dependencies {
@@ -687,6 +697,16 @@ project('spring-integration-xml') {
 			exclude group: 'org.springframework', module: 'spring-beans'
 			exclude group: 'org.springframework', module: 'spring-context'
 			exclude group: 'org.springframework', module: 'spring-core'
+		}
+		compile ("org.springframework.ws:spring-ws-core:$springWsVersion") {
+			optional it
+			exclude group: 'org.springframework', module: 'spring-aop'
+			exclude group: 'org.springframework', module: 'spring-beans'
+			exclude group: 'org.springframework', module: 'spring-context'
+			exclude group: 'org.springframework', module: 'spring-core'
+			exclude group: 'org.springframework', module: 'spring-oxm'
+			exclude group: 'org.springframework', module: 'spring-web'
+			exclude group: 'org.springframework', module: 'spring-webmvc'
 		}
 		testCompile "xmlunit:xmlunit:$xmlUnitVersion"
 	}

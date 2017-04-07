@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import org.springframework.amqp.rabbit.support.CorrelationData;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.Lifecycle;
 import org.springframework.integration.amqp.support.MappingUtils;
+import org.springframework.integration.support.AbstractIntegrationMessageBuilder;
 import org.springframework.messaging.Message;
 import org.springframework.util.Assert;
 
@@ -33,6 +34,7 @@ import org.springframework.util.Assert;
  * @author Oleg Zhurakousky
  * @author Gary Russell
  * @author Artem Bilan
+ *
  * @since 2.1
  */
 public class AmqpOutboundEndpoint extends AbstractAmqpOutboundEndpoint
@@ -100,7 +102,7 @@ public class AmqpOutboundEndpoint extends AbstractAmqpOutboundEndpoint
 		if (this.amqpTemplate instanceof RabbitTemplate) {
 			MessageConverter converter = ((RabbitTemplate) this.amqpTemplate).getMessageConverter();
 			org.springframework.amqp.core.Message amqpMessage = MappingUtils.mapMessage(requestMessage, converter,
-					getHeaderMapper(), getDefaultDeliveryMode());
+					getHeaderMapper(), getDefaultDeliveryMode(), isHeadersMappedLast());
 			addDelayProperty(requestMessage, amqpMessage);
 			((RabbitTemplate) this.amqpTemplate).send(exchangeName, routingKey, amqpMessage, correlationData);
 		}
@@ -114,13 +116,13 @@ public class AmqpOutboundEndpoint extends AbstractAmqpOutboundEndpoint
 		}
 	}
 
-	private Message<?> sendAndReceive(String exchangeName, String routingKey, Message<?> requestMessage,
-			CorrelationData correlationData) {
+	private AbstractIntegrationMessageBuilder<?> sendAndReceive(String exchangeName, String routingKey,
+			Message<?> requestMessage, CorrelationData correlationData) {
 		Assert.isInstanceOf(RabbitTemplate.class, this.amqpTemplate,
 				"RabbitTemplate implementation is required for publisher confirms");
 		MessageConverter converter = ((RabbitTemplate) this.amqpTemplate).getMessageConverter();
 		org.springframework.amqp.core.Message amqpMessage = MappingUtils.mapMessage(requestMessage, converter,
-				getHeaderMapper(), getDefaultDeliveryMode());
+				getHeaderMapper(), getDefaultDeliveryMode(), isHeadersMappedLast());
 		addDelayProperty(requestMessage, amqpMessage);
 		org.springframework.amqp.core.Message amqpReplyMessage =
 				((RabbitTemplate) this.amqpTemplate).sendAndReceive(exchangeName, routingKey, amqpMessage,
@@ -129,7 +131,7 @@ public class AmqpOutboundEndpoint extends AbstractAmqpOutboundEndpoint
 		if (amqpReplyMessage == null) {
 			return null;
 		}
-		return buildReplyMessage(converter, amqpReplyMessage);
+		return buildReply(converter, amqpReplyMessage);
 	}
 
 	@Override

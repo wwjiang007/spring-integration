@@ -16,7 +16,6 @@
 
 package org.springframework.integration.http.dsl;
 
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -27,7 +26,6 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.expression.Expression;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.integration.dsl.ComponentsRegistration;
 import org.springframework.integration.dsl.MessageHandlerSpec;
 import org.springframework.integration.expression.FunctionExpression;
@@ -37,16 +35,16 @@ import org.springframework.integration.http.support.DefaultHttpHeaderMapper;
 import org.springframework.integration.mapping.HeaderMapper;
 import org.springframework.messaging.Message;
 import org.springframework.util.Assert;
-import org.springframework.web.client.ResponseErrorHandler;
-import org.springframework.web.client.RestTemplate;
 
 /**
  * The base {@link MessageHandlerSpec} for {@link AbstractHttpRequestExecutingMessageHandler}s.
  *
  * @param <S> the target {@link BaseHttpMessageHandlerSpec} implementation type.
  * @param <E> the target {@link AbstractHttpRequestExecutingMessageHandler} implementation type.
+ *
  * @author Artem Bilan
  * @author Shiliang Li
+ *
  * @since 5.0
  */
 public abstract class BaseHttpMessageHandlerSpec<S extends BaseHttpMessageHandlerSpec<S, E>, E extends AbstractHttpRequestExecutingMessageHandler>
@@ -61,7 +59,6 @@ public abstract class BaseHttpMessageHandlerSpec<S extends BaseHttpMessageHandle
 
 	public BaseHttpMessageHandlerSpec(E handler) {
 		this.target = handler;
-		this.target.setUriVariableExpressions(this.uriVariableExpressions);
 		this.target.setHeaderMapper(this.headerMapper);
 	}
 
@@ -233,26 +230,28 @@ public abstract class BaseHttpMessageHandlerSpec<S extends BaseHttpMessageHandle
 	}
 
 	/**
-	 * Specify a SpEL expression to evaluate a value for the uri template variable.
+	 * Specify an {@link Expression} to evaluate a value for the uri template variable.
 	 * @param variable the uri template variable.
-	 * @param value the expression to evaluate value for te uri template variable.
+	 * @param expression the expression to evaluate value for te uri template variable.
 	 * @return the current Spec.
 	 * @see AbstractHttpRequestExecutingMessageHandler#setUriVariableExpressions(Map)
+	 * @see ValueExpression
+	 * @see org.springframework.expression.common.LiteralExpression
 	 */
-	public S uriVariable(String variable, Expression value) {
-		this.uriVariableExpressions.put(variable, value);
+	public S uriVariable(String variable, Expression expression) {
+		this.uriVariableExpressions.put(variable, expression);
 		return _this();
 	}
 
 	/**
-	 * Specify a value for the uri template variable.
+	 * Specify a value SpEL expression for the uri template variable.
 	 * @param variable the uri template variable.
-	 * @param value the expression to evaluate value for te uri template variable.
+	 * @param expression the expression to evaluate value for te uri template variable.
 	 * @return the current Spec.
 	 * @see AbstractHttpRequestExecutingMessageHandler#setUriVariableExpressions(Map)
 	 */
-	public S uriVariable(String variable, String value) {
-		return uriVariable(variable, PARSER.parseExpression(value));
+	public S uriVariable(String variable, String expression) {
+		return uriVariable(variable, PARSER.parseExpression(expression));
 	}
 
 	/**
@@ -312,32 +311,9 @@ public abstract class BaseHttpMessageHandlerSpec<S extends BaseHttpMessageHandle
 
 	@Override
 	public Collection<Object> getComponentsToRegister() {
+		this.target.setUriVariableExpressions(this.uriVariableExpressions);
 		return Collections.singletonList(this.headerMapper);
 	}
 
-	/**
-	 * Set the {@link ResponseErrorHandler} for the underlying {@link RestTemplate}.
-	 * @param errorHandler The error handler.
-	 * @return the spec
-	 */
-	public S errorHandler(ResponseErrorHandler errorHandler) {
-		Assert.isTrue(this.isRestTemplateSet(),
-				"the 'errorHandler' must be specified on the provided 'restTemplate'");
-		this.target.setErrorHandler(errorHandler);
-		return _this();
-	}
-
-	/**
-	 * Set a list of {@link HttpMessageConverter}s to be used by the underlying {@link RestTemplate}.
-	 * Converters configured via this method will override the default converters.
-	 * @param messageConverters The message converters.
-	 * @return the spec
-	 */
-	public S messageConverters(HttpMessageConverter<?>... messageConverters) {
-		Assert.isTrue(!isRestTemplateSet(), "the 'messageConverters' must be specified on the provided restTemplate");
-		this.target.setMessageConverters(Arrays.asList(messageConverters));
-		return _this();
-	}
-
-	protected abstract boolean isRestTemplateSet();
+	protected abstract boolean isClientSet();
 }

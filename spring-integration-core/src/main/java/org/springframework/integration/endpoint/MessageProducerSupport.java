@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,13 @@
 package org.springframework.integration.endpoint;
 
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.core.AttributeAccessor;
 import org.springframework.integration.core.MessageProducer;
 import org.springframework.integration.core.MessagingTemplate;
 import org.springframework.integration.history.MessageHistory;
+import org.springframework.integration.support.DefaultErrorMessageStrategy;
+import org.springframework.integration.support.ErrorMessageStrategy;
+import org.springframework.integration.support.ErrorMessageUtils;
 import org.springframework.integration.support.management.TrackableComponent;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -40,6 +44,8 @@ public abstract class MessageProducerSupport extends AbstractEndpoint implements
 		SmartInitializingSingleton {
 
 	private final MessagingTemplate messagingTemplate = new MessagingTemplate();
+
+	private ErrorMessageStrategy errorMessageStrategy = new DefaultErrorMessageStrategy();
 
 	private volatile MessageChannel outputChannel;
 
@@ -127,6 +133,17 @@ public abstract class MessageProducerSupport extends AbstractEndpoint implements
 		this.shouldTrack = shouldTrack;
 	}
 
+	/**
+	 * Set an {@link ErrorMessageStrategy} to use to build an error message when a exception occurs.
+	 * Default is the {@link DefaultErrorMessageStrategy}.
+	 * @param errorMessageStrategy the {@link ErrorMessageStrategy}.
+	 * @since 4.3.10
+	 */
+	public final void setErrorMessageStrategy(ErrorMessageStrategy errorMessageStrategy) {
+		Assert.notNull(errorMessageStrategy, "'errorMessageStrategy' cannot be null");
+		this.errorMessageStrategy = errorMessageStrategy;
+	}
+
 	protected MessagingTemplate getMessagingTemplate() {
 		return this.messagingTemplate;
 	}
@@ -171,14 +188,51 @@ public abstract class MessageProducerSupport extends AbstractEndpoint implements
 			this.messagingTemplate.send(getOutputChannel(), message);
 		}
 		catch (RuntimeException e) {
-			MessageChannel errorChannel = getErrorChannel();
-			if (errorChannel != null) {
-				this.messagingTemplate.send(errorChannel, new ErrorMessage(e));
-			}
-			else  {
+			if (!sendErrorMessageIfNecessary(message, e)) {
 				throw e;
 			}
 		}
+	}
+
+	/**
+	 * Send an error message based on the exception and message.
+	 * @param message the message.
+	 * @param exception the exception.
+	 * @return true if the error channel is available and message sent.
+	 * @since 4.3.10
+	 */
+	protected final boolean sendErrorMessageIfNecessary(Message<?> message, RuntimeException exception) {
+		MessageChannel errorChannel = getErrorChannel();
+		if (errorChannel != null) {
+			this.messagingTemplate.send(errorChannel, buildErrorMessage(message, exception));
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Build an error message for the exception and message using the configured
+	 * {@link ErrorMessageStrategy}.
+	 * @param message the message.
+	 * @param exception the exception.
+	 * @return the error message.
+	 * @since 4.3.10
+	 */
+	protected final ErrorMessage buildErrorMessage(Message<?> message, RuntimeException exception) {
+		return this.errorMessageStrategy.buildErrorMessage(exception,
+				getErrorMessageAttributes(message));
+	}
+
+	/**
+	 * Populate an {@link AttributeAccessor} to be used when building an error message
+	 * with the {@link #setErrorMessageStrategy(ErrorMessageStrategy)
+	 * errorMessageStrategy}.
+	 * @param message the message.
+	 * @return the attributes.
+	 * @since 4.3.10
+	 */
+	protected AttributeAccessor getErrorMessageAttributes(Message<?> message) {
+		return ErrorMessageUtils.getAttributeAccessor(message, null);
 	}
 
 }

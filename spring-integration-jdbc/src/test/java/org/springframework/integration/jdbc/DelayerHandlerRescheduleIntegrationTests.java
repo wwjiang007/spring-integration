@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -72,6 +72,7 @@ public class DelayerHandlerRescheduleIntegrationTests {
 	public static void init() {
 		dataSource = new EmbeddedDatabaseBuilder()
 				.setType(EmbeddedDatabaseType.H2)
+				.addScript("classpath:/org/springframework/integration/jdbc/schema-drop-h2.sql")
 				.addScript("classpath:/org/springframework/integration/jdbc/schema-h2.sql")
 				.build();
 	}
@@ -170,15 +171,6 @@ public class DelayerHandlerRescheduleIntegrationTests {
 		//On transaction rollback the delayed Message should remain in the persistent MessageStore
 		assertEquals(1, messageStore.messageGroupSize(delayerMessageGroupId));
 		context.close();
-	}
-
-	@SuppressWarnings("unused")
-	private static class TestJdbcMessageStore extends JdbcMessageStore {
-
-		TestJdbcMessageStore() {
-			this.setDataSource(dataSource);
-		}
-
 	}
 
 	@SuppressWarnings("unused")

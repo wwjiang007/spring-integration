@@ -8,7 +8,7 @@
 
 	<import resource="classpath:org/springframework/integration/jdbc/store/channel/DataSource-common-context.xml" />
 
-	<bean id="dataSource" class="org.apache.commons.dbcp.BasicDataSource" destroy-method="close">
+	<bean id="dataSource" class="org.apache.commons.dbcp2.BasicDataSource" destroy-method="close">
 		<property name="driverClassName" value="org.h2.Driver" />
 		<property name="initialSize" value="10" />
 		<property name="url" value="jdbc:h2:mem:integration" />
@@ -17,8 +17,8 @@
 	</bean>
 
 	<jdbc:initialize-database data-source="dataSource" ignore-failures="DROPS">
-		<jdbc:script location="classpath:org/springframework/integration/jdbc/store/channel/schema-drop-h2.sql" />
-		<jdbc:script location="classpath:org/springframework/integration/jdbc/store/channel/schema-h2.sql" />
+		<jdbc:script location="classpath:org/springframework/integration/jdbc/schema-drop-h2.sql" />
+		<jdbc:script location="classpath:org/springframework/integration/jdbc/schema-h2.sql" />
 	</jdbc:initialize-database>
 
 	<bean id="queryProvider"

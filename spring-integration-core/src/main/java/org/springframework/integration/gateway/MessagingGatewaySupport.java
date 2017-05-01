@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package org.springframework.integration.gateway;
 
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.springframework.core.AttributeAccessor;
 import org.springframework.integration.MessageTimeoutException;
 import org.springframework.integration.core.MessagingTemplate;
 import org.springframework.integration.endpoint.AbstractEndpoint;
@@ -27,7 +28,10 @@ import org.springframework.integration.handler.BridgeHandler;
 import org.springframework.integration.history.HistoryWritingMessagePostProcessor;
 import org.springframework.integration.mapping.InboundMessageMapper;
 import org.springframework.integration.mapping.OutboundMessageMapper;
+import org.springframework.integration.support.DefaultErrorMessageStrategy;
 import org.springframework.integration.support.DefaultMessageBuilderFactory;
+import org.springframework.integration.support.ErrorMessageStrategy;
+import org.springframework.integration.support.ErrorMessageUtils;
 import org.springframework.integration.support.MessageBuilderFactory;
 import org.springframework.integration.support.converter.SimpleMessageConverter;
 import org.springframework.integration.support.management.IntegrationManagedResource;
@@ -69,6 +73,8 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 	private final boolean errorOnTimeout;
 
 	private final AtomicLong messageCount = new AtomicLong();
+
+	private ErrorMessageStrategy errorMessageStrategy = new DefaultErrorMessageStrategy();
 
 	private volatile MessageChannel requestChannel;
 
@@ -289,6 +295,17 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 		return this.countsEnabled;
 	}
 
+	/**
+	 * Set an {@link ErrorMessageStrategy} to use to build an error message when a exception occurs.
+	 * Default is the {@link DefaultErrorMessageStrategy}.
+	 * @param errorMessageStrategy the {@link ErrorMessageStrategy}.
+	 * @since 4.3.10
+	 */
+	public final void setErrorMessageStrategy(ErrorMessageStrategy errorMessageStrategy) {
+		Assert.notNull(errorMessageStrategy, "'errorMessageStrategy' cannot be null");
+		this.errorMessageStrategy = errorMessageStrategy;
+	}
+
 	@Override
 	protected void onInit() throws Exception {
 		Assert.state(!(this.requestChannelName != null && this.requestChannel != null),
@@ -423,6 +440,7 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 		}
 		Object reply = null;
 		Throwable error = null;
+		Message<?> requestMessage = null;
 		try {
 			if (this.countsEnabled) {
 				this.messageCount.incrementAndGet();
@@ -435,7 +453,7 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 				}
 			}
 			else {
-				Message<?> requestMessage = (object instanceof Message<?>)
+				requestMessage = (object instanceof Message<?>)
 						? (Message<?>) object : this.requestMapper.toMessage(object);
 				requestMessage = this.historyWritingPostProcessor.postProcessMessage(requestMessage);
 				reply = this.messagingTemplate.sendAndReceive(requestChannel, requestMessage);
@@ -462,7 +480,7 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 		if (error != null) {
 			MessageChannel errorChannel = getErrorChannel();
 			if (errorChannel != null) {
-				Message<?> errorMessage = new ErrorMessage(error);
+				ErrorMessage errorMessage = buildErrorMessage(requestMessage, error);
 				Message<?> errorFlowReply = null;
 				try {
 					errorFlowReply = this.messagingTemplate.sendAndReceive(errorChannel, errorMessage);
@@ -497,6 +515,32 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 			}
 		}
 		return reply;
+	}
+
+	/**
+	 * Build an error message for the message and throwable using the configured
+	 * {@link ErrorMessageStrategy}.
+	 * @param requestMessage the requestMessage.
+	 * @param throwable the throwable.
+	 * @return the error message.
+	 * @since 4.3.10
+	 */
+	protected final ErrorMessage buildErrorMessage(Message<?> requestMessage, Throwable throwable) {
+		ErrorMessage errorMessage = this.errorMessageStrategy.buildErrorMessage(throwable,
+				getErrorMessageAttributes(requestMessage));
+		return errorMessage;
+	}
+
+	/**
+	 * Populate an {@link AttributeAccessor} to be used when building an error message
+	 * with the {@link #setErrorMessageStrategy(ErrorMessageStrategy)
+	 * errorMessageStrategy}.
+	 * @param message the message.
+	 * @return the attributes.
+	 * @since 4.3.10
+	 */
+	protected AttributeAccessor getErrorMessageAttributes(Message<?> message) {
+		return ErrorMessageUtils.getAttributeAccessor(message, null);
 	}
 
 	private void rethrow(Throwable t, String description) {

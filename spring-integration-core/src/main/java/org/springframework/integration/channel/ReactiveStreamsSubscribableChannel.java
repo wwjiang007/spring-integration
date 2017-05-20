@@ -22,10 +22,11 @@ import org.springframework.messaging.Message;
 
 /**
  * @author Artem Bilan
+ * @author Gary Russell
  *
  * @since 5.0
  */
-public interface ReactiveSubscribableChannel {
+public interface ReactiveStreamsSubscribableChannel {
 
 	void subscribeTo(Publisher<Message<?>> publisher);
 

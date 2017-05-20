@@ -16,10 +16,7 @@
 
 package org.springframework.integration.dsl.channel;
 
-import org.springframework.integration.channel.ReactiveChannel;
-import org.springframework.messaging.Message;
-
-import reactor.core.publisher.FluxProcessor;
+import org.springframework.integration.channel.FluxMessageChannel;
 
 /**
  * @author Artem Bilan
@@ -27,14 +24,10 @@ import reactor.core.publisher.FluxProcessor;
  *
  * @since 5.0
  */
-public class ReactiveChannelSpec extends MessageChannelSpec<ReactiveChannelSpec, ReactiveChannel> {
+public class FluxMessageChannelSpec extends MessageChannelSpec<FluxMessageChannelSpec, FluxMessageChannel> {
 
-	ReactiveChannelSpec() {
-		this.channel = new ReactiveChannel();
-	}
-
-	ReactiveChannelSpec(FluxProcessor<Message<?>, Message<?>> processor) {
-		this.channel = new ReactiveChannel(processor);
+	FluxMessageChannelSpec() {
+		this.channel = new FluxMessageChannel();
 	}
 
 }

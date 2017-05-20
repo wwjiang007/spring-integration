@@ -4,7 +4,7 @@ buildscript {
 	}
 	dependencies {
 		classpath 'io.spring.gradle:dependency-management-plugin:1.0.2.RELEASE'
-		classpath 'io.spring.gradle:spring-io-plugin:0.0.6.RELEASE'
+		classpath 'io.spring.gradle:spring-io-plugin:0.0.7.RELEASE'
 		classpath 'io.spring.gradle:docbook-reference-plugin:0.3.1'
 		classpath 'org.asciidoctor:asciidoctor-gradle-plugin:1.5.0'
 	}
@@ -124,7 +124,7 @@ subprojects { subproject ->
 		mysqlVersion = '5.1.41'
 		pahoMqttClientVersion = '1.1.1'
 		postgresVersion = '42.0.0'
-		reactorNettyVersion = '0.6.3.BUILD-SNAPSHOT'
+		reactorNettyVersion = '0.6.3.RELEASE'
 		reactorVersion = '3.1.0.BUILD-SNAPSHOT'
 		romeToolsVersion = '1.7.2'
 		servletApiVersion = '3.1.0'
@@ -136,7 +136,7 @@ subprojects { subproject ->
 		springDataRedisVersion = '2.0.0.BUILD-SNAPSHOT'
 		springGemfireVersion = '2.0.0.BUILD-SNAPSHOT'
 		springSecurityVersion = '5.0.0.BUILD-SNAPSHOT'
-		springSocialTwitterVersion = '2.0.0.M1'
+		springSocialTwitterVersion = '2.0.0.BUILD-SNAPSHOT'
 		springRetryVersion = '1.2.0.RELEASE'
 		springVersion = project.hasProperty('springVersion') ? project.springVersion : '5.0.0.BUILD-SNAPSHOT'
 		springWsVersion = '2.4.0.RELEASE'

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,23 @@
 
 package org.springframework.integration.support.json;
 
-import org.springframework.util.ClassUtils;
+import org.springframework.integration.message.AdviceMessage;
+import org.springframework.integration.support.MutableMessage;
+import org.springframework.messaging.support.ErrorMessage;
+import org.springframework.messaging.support.GenericMessage;
+
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 
 /**
  * Utility methods for Jackson.
  *
  * @author Artem Bilan
  * @author Gary Russell
+ *
  * @since 3.0
  *
  */
@@ -32,22 +42,45 @@ public final class JacksonJsonUtils {
 		super();
 	}
 
-	private static final ClassLoader classLoader = JacksonJsonUtils.class.getClassLoader();
+	/**
+	 * Return an {@link com.fasterxml.jackson.databind.ObjectMapper} if available,
+	 * supplied with Message specific serializers and deserializers.
+	 * Also configured to store typo info in the {@code @class} property.
+	 * @return the mapper.
+	 * @throws IllegalStateException if an implementation is not available.
+	 * @since 4.3.10
+	 */
+	public static com.fasterxml.jackson.databind.ObjectMapper messagingAwareMapper() {
+		if (JacksonPresent.isJackson2Present()) {
+			ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+			mapper.configure(MapperFeature.DEFAULT_VIEW_INCLUSION, false);
+			mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+			mapper.enableDefaultTyping(ObjectMapper.DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
 
-	private static final boolean jackson2Present =
-			ClassUtils.isPresent("com.fasterxml.jackson.databind.ObjectMapper", classLoader) &&
-					ClassUtils.isPresent("com.fasterxml.jackson.core.JsonGenerator", classLoader);
+			GenericMessageJacksonDeserializer genericMessageDeserializer = new GenericMessageJacksonDeserializer();
+			genericMessageDeserializer.setMapper(mapper);
 
-	private static final boolean jacksonPresent =
-			ClassUtils.isPresent("org.codehaus.jackson.map.ObjectMapper", classLoader) &&
-					ClassUtils.isPresent("org.codehaus.jackson.JsonGenerator", classLoader);
+			ErrorMessageJacksonDeserializer errorMessageDeserializer = new ErrorMessageJacksonDeserializer();
+			errorMessageDeserializer.setMapper(mapper);
 
-	public static boolean isJackson2Present() {
-		return jackson2Present;
-	}
+			AdviceMessageJacksonDeserializer adviceMessageDeserializer = new AdviceMessageJacksonDeserializer();
+			adviceMessageDeserializer.setMapper(mapper);
 
-	public static boolean isJacksonPresent() {
-		return jacksonPresent;
+			MutableMessageJacksonDeserializer mutableMessageDeserializer = new MutableMessageJacksonDeserializer();
+			mutableMessageDeserializer.setMapper(mapper);
+
+			mapper.registerModule(new SimpleModule()
+					.addSerializer(new MessageHeadersJacksonSerializer())
+					.addDeserializer(GenericMessage.class, genericMessageDeserializer)
+					.addDeserializer(ErrorMessage.class, errorMessageDeserializer)
+					.addDeserializer(AdviceMessage.class, adviceMessageDeserializer)
+					.addDeserializer(MutableMessage.class, mutableMessageDeserializer)
+			);
+			return mapper;
+		}
+		else {
+			throw new IllegalStateException("No jackson-databind.jar is present in the classpath.");
+		}
 	}
 
 }

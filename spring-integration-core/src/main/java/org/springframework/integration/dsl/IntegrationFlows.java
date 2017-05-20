@@ -21,7 +21,7 @@ import java.util.function.Consumer;
 import org.reactivestreams.Publisher;
 
 import org.springframework.integration.channel.DirectChannel;
-import org.springframework.integration.channel.ReactiveChannel;
+import org.springframework.integration.channel.FluxMessageChannel;
 import org.springframework.integration.core.MessageSource;
 import org.springframework.integration.dsl.channel.MessageChannelSpec;
 import org.springframework.integration.dsl.support.FixedSubscriberChannelPrototype;
@@ -39,6 +39,7 @@ import org.springframework.util.Assert;
  * The central factory for fluent {@link IntegrationFlowBuilder} API.
  *
  * @author Artem Bilan
+ * @author Gary Russell
  *
  * @since 5.0
  *
@@ -299,13 +300,13 @@ public final class IntegrationFlows {
 	}
 
 	/**
-	 * Populate a {@link ReactiveChannel} to the {@link IntegrationFlowBuilder} chain
+	 * Populate a {@link FluxMessageChannel} to the {@link IntegrationFlowBuilder} chain
 	 * and subscribe it to the provided {@link Publisher}.
 	 * @param publisher the {@link Publisher} to subscribe to.
 	 * @return new {@link IntegrationFlowBuilder}.
 	 */
 	public static IntegrationFlowBuilder from(Publisher<Message<?>> publisher) {
-		ReactiveChannel reactiveChannel = new ReactiveChannel();
+		FluxMessageChannel reactiveChannel = new FluxMessageChannel();
 		reactiveChannel.subscribeTo(publisher);
 		return from((MessageChannel) reactiveChannel);
 	}

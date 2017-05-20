@@ -23,8 +23,6 @@ import org.springframework.integration.store.ChannelMessageStore;
 import org.springframework.integration.store.PriorityCapableChannelMessageStore;
 import org.springframework.messaging.Message;
 
-import reactor.core.publisher.FluxProcessor;
-
 /**
  * @author Artem Bilan
  * @author Gary Russell
@@ -126,20 +124,13 @@ public final class MessageChannels {
 		return MessageChannels.<S>publishSubscribe(executor).id(id);
 	}
 
-	public static ReactiveChannelSpec reactive() {
-		return new ReactiveChannelSpec();
+	public static FluxMessageChannelSpec flux() {
+		return new FluxMessageChannelSpec();
 	}
 
-	public static ReactiveChannelSpec reactive(String id) {
-		return reactive().id(id);
-	}
-
-	public static ReactiveChannelSpec reactive(FluxProcessor<Message<?>, Message<?>> processor) {
-		return new ReactiveChannelSpec(processor);
-	}
-
-	public static ReactiveChannelSpec reactive(String id, FluxProcessor<Message<?>, Message<?>> processor) {
-		return reactive(processor).id(id);
+	public static FluxMessageChannelSpec flux(String id) {
+		return flux()
+				.id(id);
 	}
 
 	private MessageChannels() {

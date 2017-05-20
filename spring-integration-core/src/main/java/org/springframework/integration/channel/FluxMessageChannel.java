@@ -18,49 +18,43 @@ package org.springframework.integration.channel;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 
 import org.springframework.messaging.Message;
-import org.springframework.util.Assert;
 
-import reactor.core.publisher.DirectProcessor;
+import reactor.core.publisher.ConnectableFlux;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.FluxProcessor;
 import reactor.core.publisher.FluxSink;
 
 /**
+ * The {@link AbstractMessageChannel} implementation for the
+ * Reactive Streams {@link Publisher} based on the Project Reactor {@link Flux}.
+ *
  * @author Artem Bilan
  * @author Gary Russell
  *
  * @since 5.0
  */
-public class ReactiveChannel extends AbstractMessageChannel
-		implements Publisher<Message<?>>, ReactiveSubscribableChannel {
+public class FluxMessageChannel extends AbstractMessageChannel
+		implements Publisher<Message<?>>, ReactiveStreamsSubscribableChannel {
 
 	private final List<Subscriber<? super Message<?>>> subscribers = new ArrayList<>();
 
-	private final List<Publisher<Message<?>>> publishers = new CopyOnWriteArrayList<>();
-
-	private final FluxProcessor<Message<?>, Message<?>> processor;
+	private final Map<Publisher<Message<?>>, ConnectableFlux<Message<?>>> publishers = new ConcurrentHashMap<>();
 
 	private final Flux<Message<?>> flux;
 
-	private final FluxSink<Message<?>> sink;
+	private FluxSink<Message<?>> sink;
 
-	private volatile boolean upstreamSubscribed;
-
-	public ReactiveChannel() {
-		this(DirectProcessor.create());
-	}
-
-	public ReactiveChannel(FluxProcessor<Message<?>, Message<?>> processor) {
-		Assert.notNull(processor, "'processor' must not be null");
-		this.processor = processor;
-		this.flux = Flux.from(processor);
-		this.sink = processor.sink();
+	public FluxMessageChannel() {
+		this.flux =
+				Flux.<Message<?>>create(emitter -> this.sink = emitter, FluxSink.OverflowStrategy.IGNORE)
+						.publish()
+						.autoConnect();
 	}
 
 	@Override
@@ -73,32 +67,26 @@ public class ReactiveChannel extends AbstractMessageChannel
 	public void subscribe(Subscriber<? super Message<?>> subscriber) {
 		this.subscribers.add(subscriber);
 
-		this.flux.doOnCancel(() -> ReactiveChannel.this.subscribers.remove(subscriber))
+		this.flux.doOnCancel(() -> this.subscribers.remove(subscriber))
+				.retry()
 				.subscribe(subscriber);
 
-		if (!this.upstreamSubscribed) {
-			this.publishers.forEach(this::doSubscribeTo);
-		}
+		this.publishers.values().forEach(ConnectableFlux::connect);
 	}
 
 	@Override
 	public void subscribeTo(Publisher<Message<?>> publisher) {
-		this.publishers.add(publisher);
-		if (!this.subscribers.isEmpty()) {
-			doSubscribeTo(publisher);
-		}
-	}
+		ConnectableFlux<Message<?>> connectableFlux =
+				Flux.from(publisher)
+						.doOnComplete(() -> this.publishers.remove(publisher))
+						.doOnNext(this::send)
+						.publish();
 
-	private void doSubscribeTo(Publisher<Message<?>> publisher) {
-		Flux.from(publisher)
-				.doOnSubscribe(s -> ReactiveChannel.this.upstreamSubscribed = true)
-				.doOnComplete(() -> {
-					ReactiveChannel.this.publishers.remove(publisher);
-					if (ReactiveChannel.this.publishers.isEmpty()) {
-						ReactiveChannel.this.upstreamSubscribed = false;
-					}
-				})
-				.subscribe(this.processor);
+		this.publishers.put(publisher, connectableFlux);
+
+		if (!this.subscribers.isEmpty()) {
+			connectableFlux.connect();
+		}
 	}
 
 }

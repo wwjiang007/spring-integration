@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,23 @@
  * limitations under the License.
  */
 
-package org.springframework.integration.dsl;
+package org.springframework.integration.file.support;
 
-import java.util.Map;
+import java.nio.file.FileSystems;
 
 /**
- * The marker interface for the {@link IntegrationComponentSpec} implementation,
- * when there is need to register as beans not only the target spec's components,
- * but some additional components, e.g. {@code subflows} from
- * {@link org.springframework.integration.dsl.RouterSpec}.
- * <p>
- * For internal use only.
+ * Utilities for operations on Files.
  *
- * @author Artem Bilan
- *
+ * @author Gary Russell
  * @since 5.0
+ *
  */
-@FunctionalInterface
-public interface ComponentsRegistration {
+public final class FileUtils {
 
-	Map<Object, String> getComponentsToRegister();
+	public static final boolean IS_POSIX = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+
+	private FileUtils() {
+		super();
+	}
 
 }

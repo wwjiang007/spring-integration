@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -83,19 +84,19 @@ import org.springframework.messaging.SubscribableChannel;
 import org.springframework.messaging.support.ErrorMessage;
 import org.springframework.messaging.support.GenericMessage;
 import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.annotation.DirtiesContext.ClassMode;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
 /**
  * @author Gary Russell
  * @author Artem Bilan
+ *
  * @since 2.2
  *
  */
 @ContextConfiguration
 @RunWith(SpringJUnit4ClassRunner.class)
-@DirtiesContext(classMode = ClassMode.AFTER_EACH_TEST_METHOD)
+@DirtiesContext
 public class CachingClientConnectionFactoryTests {
 
 	@Autowired
@@ -458,13 +459,13 @@ public class CachingClientConnectionFactoryTests {
 		new DirectFieldAccessor(this.clientAdapterCf).setPropertyValue("port", this.serverCf.getPort());
 
 		this.outbound.send(new GenericMessage<>("Hello, world!"));
-		Message<?> m = inbound.receive(10000);
+		Message<?> m = inbound.receive(20_000);
 		assertNotNull(m);
 		String connectionId = m.getHeaders().get(IpHeaders.CONNECTION_ID, String.class);
 
 		// assert we use the same connection from the pool
 		outbound.send(new GenericMessage<String>("Hello, world!"));
-		m = inbound.receive(10000);
+		m = inbound.receive(20_000);
 		assertNotNull(m);
 		assertEquals(connectionId, m.getHeaders().get(IpHeaders.CONNECTION_ID, String.class));
 	}
@@ -474,7 +475,8 @@ public class CachingClientConnectionFactoryTests {
 	public void gatewayIntegrationTest() throws Exception {
 		final List<String> connectionIds = new ArrayList<String>();
 		final AtomicBoolean okToRun = new AtomicBoolean(true);
-		Executors.newSingleThreadExecutor().execute(() -> {
+		ExecutorService exec = Executors.newSingleThreadExecutor();
+		exec.execute(() -> {
 			while (okToRun.get()) {
 				Message<?> m = inbound.receive(1000);
 				if (m != null) {
@@ -511,6 +513,8 @@ public class CachingClientConnectionFactoryTests {
 		assertEquals(connectionIds.get(0), connectionIds.get(1));
 
 		okToRun.set(false);
+		exec.shutdownNow();
+		assertTrue(exec.awaitTermination(20, TimeUnit.SECONDS));
 	}
 
 	@Test
@@ -742,7 +746,7 @@ public class CachingClientConnectionFactoryTests {
 			if (!(message instanceof ErrorMessage)) {
 				if (count.decrementAndGet() < 1) {
 					try {
-						Thread.sleep(1000);
+						Thread.sleep(100);
 					}
 					catch (InterruptedException e) {
 						Thread.currentThread().interrupt();

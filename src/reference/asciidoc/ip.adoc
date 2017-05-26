@@ -165,7 +165,7 @@ By default, reverse DNS lookups are done on inbound packets to convert IP addres
 In environments where DNS is not configured, this can cause delays.
 This default behavior can be overridden by setting the `lookup-host` attribute to "false".
 
-[[connection-factories]]
+[[tcp-connection-factories]]
 === TCP Connection Factories
 
 For TCP, the configuration of the underlying connection is provided using a Connection Factory.
@@ -364,6 +364,41 @@ Initially, the first factory in the configured list is used; if a connection sub
 
 NOTE: When using the failover connection factory, the singleUse property must be consistent between the factory itself and the list of factories it is configured to use.
 
+[[tcp-affinity-cf]]
+==== TCP Thread Affinity Connection Factory
+
+Spring Integration _version 5.0_ introduced this connection factory.
+It binds a connection to the calling thread and the same connection is reused each time that thread sends a message.
+This continues until the connection is closed (by the server or network) or until the thread calls the `releaseConnection()` method.
+The connections themselves are provided by another client factory implementation; which must be configured to provide non-shared (single-use) connections so that each thread gets a connection.
+
+Example configuration:
+
+[source, java]
+----
+@Bean
+public TcpNetClientConnectionFactory cf() {
+    TcpNetClientConnectionFactory cf = new TcpNetClientConnectionFactory("localhost",
+            Integer.parseInt(System.getProperty(PORT)));
+    cf.setSingleUse(true);
+    return cf;
+}
+
+@Bean
+public ThreadAffinityClientConnectionFactory tacf() {
+    return new ThreadAffinityClientConnectionFactory(cf());
+}
+
+@Bean
+@ServiceActivator(inputChannel = "out")
+public TcpOutboundGateway outGate() {
+    TcpOutboundGateway outGate = new TcpOutboundGateway();
+    outGate.setConnectionFactory(tacf());
+    outGate.setReplyChannelName("toString");
+    return outGate;
+}
+----
+
 [[ip-interceptors]]
 === TCP Connection Interceptors
 
@@ -429,7 +464,7 @@ Beginning with version 3.0, changes to `TcpConnection` s are reported by `TcpCon
 * `throwable` - the `Throwable` (for `TcpConnectionExceptionEvent` events only)
 * `source` - the `TcpConnection`; this can be used, for example, to determine the remote IP Address with `getHostAddress()` (cast required)
 
-In addition, since _version 4.0_ the standard deserializers discussed in <<connection-factories>> now emit `TcpDeserializationExceptionEvent` s when problems are encountered decoding the data stream.
+In addition, since _version 4.0_ the standard deserializers discussed in <<tcp-connection-factories>> now emit `TcpDeserializationExceptionEvent` s when problems are encountered decoding the data stream.
 These events contain the exception, the buffer that was in the process of being built, and an offset into the buffer (if available) at the point the exception occurred.
 Applications can use a normal `ApplicationListener`, or see <<appevent-inbound>>, to capture these events, allowing analysis of the problem.
 
@@ -637,7 +672,7 @@ Such a transformer may transform the original payload to a new object containing
 Of course, live objects (such as reply channels) from the headers can not be included in the transformed payload.
 
 If such a strategy is chosen you will need to ensure the connection factory has an appropriate serializer/deserializer pair to handle such a payload, such as the `DefaultSerializer/Deserializer` which use java serialization, or a custom serializer and deserializer.
-The `ByteArray*Serializer` options mentioned in <<connection-factories>>, including the default `ByteArrayCrLfSerializer`, do not support such payloads, unless the transformed payload is a `String` or `byte[]`,
+The `ByteArray*Serializer` options mentioned in <<tcp-connection-factories>>, including the default `ByteArrayCrLfSerializer`, do not support such payloads, unless the transformed payload is a `String` or `byte[]`,
 
 [NOTE]
 =====
@@ -896,7 +931,7 @@ The keystore file names (first two constructor arguments) use the Spring `Resour
 Starting with _version 4.3.6_, when using NIO, you can specify an `ssl-handshake-timeout` (seconds) on the connection factory.
 This timeout (default 30) is used during SSL handshake when waiting for data; if the timeout is exceeded, the process is aborted and the socket closed.
 
-[[advanced-techniques]]
+[[tcp-advanced-techniques]]
 === Advanced Techniques
 
 ==== Strategy Interfaces
@@ -907,8 +942,10 @@ However, a number of strategy interfaces are provided to allow customization and
 * `TcpSSLContextSupport`
 * `TcpSocketFactorySupport`
 * `TcpSocketSupport`
+* `TcpNetConnectionSupport`
 * `TcpNioConnectionSupport`
 
+.TcpSSLContextSupport
 [source,java]
 ----
 public interface TcpSSLContextSupport {
@@ -922,6 +959,7 @@ Implementations of this interface are responsible for creating an SSLContext.
 The implementation provided by the framework is the `DefaultTcpSSLContextSupport` described above.
 If you require different behavior, implement this interface and provide the connection factory with a reference to a bean of your class' implementation.
 
+.TcpSocketFactorySupport
 [source,java]
 ----
 public interface TcpSocketFactorySupport {
@@ -940,6 +978,7 @@ The second implementation is `DefaultTcpNetSSLSocketFactorySupport`; this is use
 
 NOTE: This interface only applies if `using-nio` is "false"; socket factories are not used by NIO.
 
+.TcpSocketSupport
 [source,java]
 ----
 public interface TcpSocketSupport {
@@ -958,6 +997,56 @@ The sole implementation provided by the framework is the `DefaultTcpSocketSuppor
 
 To supply your own implementation of `TcpSocketFactorySupport` or `TcpSocketSupport`, provide the connection factory with references to beans of your custom type using the `socket-factory-support` and `socket-support` attributes, respectively.
 
+.TcpNetConnectionSupport
+[source, java]
+----
+public interface TcpNetConnectionSupport {
+
+	TcpNetConnection createNewConnection(Socket socket,
+			boolean server, boolean lookupHost,
+			ApplicationEventPublisher applicationEventPublisher,
+			String connectionFactoryName) throws Exception;
+
+}
+----
+
+This interface is invoked to create `TcpNetConnection` objects (or objects from subclasses).
+The framework provides a single implementation `DefatulTcpNetConnectionSupport` which creates simple `TcpNetConnection` objects by default.
+It has two properties `pushbackCapable` and `pushbackBufferSize`; when push back is enabled, the implementation returns a subclass that wraps the connection's `InputStream` in a `PushbackInputStream`.
+Aligned with the `PushbackInputStream` default, the buffer size defaults to 1.
+This enables deserializers to "unread" (push back) bytes into the stream.
+The following is a trivial example of how it might be used in a delegating deserializer which "peeks" at the first byte to determine which deserializer to invoke:
+
+[source, java]
+----
+public class CompositeDeserializer implements Deserializer<byte[]> {
+
+    private final ByteArrayStxEtxSerializer stxEtx = new ByteArrayStxEtxSerializer();
+
+    private final ByteArrayCrLfSerializer crlf = new ByteArrayCrLfSerializer();
+
+    @Override
+    public byte[] deserialize(InputStream inputStream) throws IOException {
+        PushbackInputStream pbis = (PushbackInputStream) inputStream;
+        int first = pbis.read();
+        if (first < 0) {
+            throw new SoftEndOfStreamException();
+        }
+        pbis.unread(first);
+        if (first == ByteArrayStxEtxSerializer.STX) {
+            this.receivedStxEtx = true;
+            return this.stxEtx.deserialize(pbis);
+        }
+        else {
+            this.receivedCrLf = true;
+            return this.crlf.deserialize(pbis);
+        }
+    }
+
+}
+----
+
+.TcpNioConnectionSupport
 [source, java]
 ----
 public interface TcpNioConnectionSupport {
@@ -970,9 +1059,10 @@ public interface TcpNioConnectionSupport {
 }
 ----
 
-This interface is invoked to create `TcpNioConnection` objects (or subclasses).
+This interface is invoked to create `TcpNioConnection` objects (or objects from subclasses).
 Two implementations are provided `DefaultTcpNioSSLConnectionSupport` and `DefaultTcpNioConnectionSupport` which are used depending on whether SSL is in use or not.
 A common use case would be to subclass `DefaultTcpNioSSLConnectionSupport` and override `postProcessSSLEngine`; see the example below.
+As with the `DefatulTcpNetConnectionSupport`, these implementations also support push back.
 
 ==== Example: Enabling SSL Client Authentication
 
@@ -1186,7 +1276,7 @@ Defaults to true.
 | Y
 | Y
 |
-| See <<advanced-techniques>>
+| See <<tcp-advanced-techniques>>
 | read-delay
 | Y
 | Y

@@ -111,7 +111,11 @@ See <<file-tailing>> for more information.
 The flush predicates for the `FileWritingMessageHandler` now have an additional parameter.
 See <<file-flushing>> for more information.
 
-The file outbound channel adapter (`FileWritingMessageHandler`) now supports the `REPLACE_IF_MODIFIED` `FileExistsMode`.
+The file outbound channel adapter and gateway (`FileWritingMessageHandler`) now support the `REPLACE_IF_MODIFIED` `FileExistsMode`.
+See <<file-writing-destination-exists>> for more information.
+
+They also now support setting file permissions on the newly written file.
+See <<file-permissions>> for more information.
 
 ==== (S)FTP Changes
 
@@ -131,6 +135,12 @@ The FTP and SFTP outbound channel adapters, as well as `PUT` command of the outb
 
 The inbound channel adapters now can build file tree locally and use a new `RecursiveDirectoryScanner` by default for local directory.
 Also these adapters can now be switched to the `WatchService` instead.
+
+The `NLST` command has been added to the `AbstractRemoteFileOutboundGateway` to perform only list files names remote command.
+
+The `FtpOutboundGateway` can now be supplied with `workingDirExpression` to change the FTP client working directory for the current request message.
+
+The `RemoteFileTemplate` is supplied now with the `invoke(OperationsCallback<F, T> action)` to perform several `RemoteFileOperations` calls in the scope of the same, thread-bounded, `Session`.
 
 See <<ftp>> and <<sftp>> for more information.
 
@@ -208,3 +218,12 @@ The `zsetIncrementExpression` can now be configured on the `RedisStoreWritingMes
 In addition this property has been changed from `true` to `false` since `INCR` option on `ZADD` Redis command is optional.
 
 See <<redis>> for more information.
+
+==== TCP Changes
+
+
+A new `ThreadAffinityClientConnectionFactory` is provided that binds TCP connections to threads.
+See <<tcp-affinity-cf>> for more information.
+
+You can now configure the TCP connection factories to support `PushbackInputStream` s, allowing deserializers to "unread" (push back) bytes after "reading ahead".
+See <<tcp-advanced-techniques>> for more information.

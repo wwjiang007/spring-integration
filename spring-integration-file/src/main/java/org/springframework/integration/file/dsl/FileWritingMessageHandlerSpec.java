@@ -17,8 +17,8 @@
 package org.springframework.integration.file.dsl;
 
 import java.io.File;
-import java.util.Collection;
 import java.util.Collections;
+import java.util.Map;
 import java.util.function.Function;
 
 import org.springframework.expression.Expression;
@@ -38,6 +38,7 @@ import org.springframework.util.Assert;
  * The {@link MessageHandlerSpec} for the {@link FileWritingMessageHandler}.
  *
  * @author Artem Bilan
+ * @author Gary Russell
  *
  * @since 5.0
  */
@@ -245,10 +246,24 @@ public class FileWritingMessageHandlerSpec
 		return this;
 	}
 
+	/**
+	 * Set the file permissions after uploading, e.g. 0600 for
+	 * owner read/write. Only applies to file systems that support posix
+	 * file permissions.
+	 * @param chmod the permissions.
+	 * @throws IllegalArgumentException if the value is higher than 0777.
+	 * @return the spec.
+	 * @see FileWritingMessageHandler#setChmod(int)
+	 */
+	public FileWritingMessageHandlerSpec chmod(int chmod) {
+		this.target.setChmod(chmod);
+		return this;
+	}
+
 	@Override
-	public Collection<Object> getComponentsToRegister() {
+	public Map<Object, String> getComponentsToRegister() {
 		if (this.defaultFileNameGenerator != null) {
-			return Collections.singletonList(this.defaultFileNameGenerator);
+			return Collections.singletonMap(this.defaultFileNameGenerator, null);
 		}
 		return null;
 	}

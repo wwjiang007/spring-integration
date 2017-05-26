@@ -17,6 +17,7 @@
 package org.springframework.integration.file.dsl;
 
 import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -65,11 +66,16 @@ import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.dsl.Pollers;
 import org.springframework.integration.dsl.StandardIntegrationFlow;
 import org.springframework.integration.dsl.channel.MessageChannels;
+import org.springframework.integration.expression.FunctionExpression;
 import org.springframework.integration.file.DefaultFileNameGenerator;
 import org.springframework.integration.file.FileHeaders;
 import org.springframework.integration.file.FileReadingMessageSource;
+import org.springframework.integration.file.filters.AcceptOnceFileListFilter;
+import org.springframework.integration.file.filters.ChainFileListFilter;
+import org.springframework.integration.file.filters.ExpressionFileListFilter;
 import org.springframework.integration.file.splitter.FileSplitter;
 import org.springframework.integration.file.support.FileExistsMode;
+import org.springframework.integration.file.support.FileUtils;
 import org.springframework.integration.file.tail.ApacheCommonsFileTailingMessageProducer;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.integration.test.util.TestUtils;
@@ -236,6 +242,9 @@ public class FileTests {
 				endsWith(TestUtils.applySystemFileSeparator("fileWritingFlow/foo.write")));
 		String fileContent = StreamUtils.copyToString(new FileInputStream(resultFile), Charset.defaultCharset());
 		assertEquals(payload, fileContent);
+		if (FileUtils.IS_POSIX) {
+			assertThat(java.nio.file.Files.getPosixFilePermissions(resultFile.toPath()).size(), equalTo(9));
+		}
 	}
 
 	@Autowired
@@ -385,7 +394,9 @@ public class FileTests {
 			return IntegrationFlows.from("fileWritingInput")
 					.enrichHeaders(h -> h.header(FileHeaders.FILENAME, "foo.write")
 							.header("directory", new File(tmpDir.getRoot(), "fileWritingFlow")))
-					.handle(Files.outboundGateway(m -> m.getHeaders().get("directory")))
+					.handle(Files.outboundGateway(m -> m.getHeaders().get("directory"))
+							.preserveTimestamp(true)
+							.chmod(0777))
 					.channel(MessageChannels.queue("fileWritingResultChannel"))
 					.get();
 		}
@@ -395,7 +406,10 @@ public class FileTests {
 		public IntegrationFlow fileSplitterFlow() {
 			return IntegrationFlows
 					.from(Files.inboundAdapter(tmpDir.getRoot())
-									.filterFunction(f -> "foo.tmp".equals(f.getName())),
+									.filter(new ChainFileListFilter<File>()
+											.addFilter(new AcceptOnceFileListFilter<>())
+											.addFilter(new ExpressionFileListFilter<>(
+													new FunctionExpression<File>(f -> "foo.tmp".equals(f.getName()))))),
 							e -> e.poller(p -> p.fixedDelay(100)))
 					.split(Files.splitter()
 									.markers()

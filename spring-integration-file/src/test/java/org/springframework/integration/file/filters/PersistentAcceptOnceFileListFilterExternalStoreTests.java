@@ -20,6 +20,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -33,14 +35,21 @@ import org.mockito.Mockito;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.integration.gemfire.metadata.GemfireMetadataStore;
+import org.springframework.integration.jdbc.metadata.JdbcMetadataStore;
 import org.springframework.integration.metadata.ConcurrentMetadataStore;
 import org.springframework.integration.redis.metadata.RedisMetadataStore;
 import org.springframework.integration.redis.rules.RedisAvailable;
 import org.springframework.integration.redis.rules.RedisAvailableTests;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.embedded.EmbeddedDatabase;
+import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
+import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
 
 /**
  * @author Gary Russell
  * @author Artem Bilan
+ * @author Bojan Vukasovic
+ *
  * @since 4.0
  *
  */
@@ -67,6 +76,31 @@ public class PersistentAcceptOnceFileListFilterExternalStoreTests extends RedisA
 	@Test
 	public void testFileSystemWithGemfireMetadataStore() throws Exception {
 		this.testFileSystem(new GemfireMetadataStore(new CacheFactory().create()));
+	}
+
+	@Test
+	public void testFileSystemWithJdbcMetadataStore() throws Exception {
+		EmbeddedDatabase dataSource = new EmbeddedDatabaseBuilder()
+				.setType(EmbeddedDatabaseType.H2)
+				.addScript("classpath:/org/springframework/integration/jdbc/schema-drop-h2.sql")
+				.addScript("classpath:/org/springframework/integration/jdbc/schema-h2.sql")
+				.build();
+
+		JdbcMetadataStore metadataStore = new JdbcMetadataStore(dataSource);
+		metadataStore.afterPropertiesSet();
+
+		try {
+			testFileSystem(metadataStore);
+
+			List<Map<String, Object>> metaData = new JdbcTemplate(dataSource)
+					.queryForList("SELECT * FROM INT_METADATA_STORE");
+
+			assertEquals(1, metaData.size());
+			assertEquals("43", metaData.get(0).get("METADATA_VALUE"));
+		}
+		finally {
+			dataSource.shutdown();
+		}
 	}
 
 	private void testFileSystem(ConcurrentMetadataStore store) throws Exception {

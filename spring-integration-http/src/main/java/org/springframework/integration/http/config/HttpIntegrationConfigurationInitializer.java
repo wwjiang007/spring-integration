@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2016 the original author or authors.
+ * Copyright 2014-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import org.springframework.integration.http.support.HttpContextUtils;
  * The HTTP Integration infrastructure {@code beanFactory} initializer.
  *
  * @author Artem Bilan
+ *
  * @since 4.0
  */
 public class HttpIntegrationConfigurationInitializer implements IntegrationConfigurationInitializer {
@@ -42,7 +43,7 @@ public class HttpIntegrationConfigurationInitializer implements IntegrationConfi
 	@Override
 	public void initialize(ConfigurableListableBeanFactory beanFactory) throws BeansException {
 		if (beanFactory instanceof BeanDefinitionRegistry) {
-			this.registerRequestMappingHandlerMappingIfNecessary((BeanDefinitionRegistry) beanFactory);
+			registerRequestMappingHandlerMappingIfNecessary((BeanDefinitionRegistry) beanFactory);
 		}
 		else {
 			logger.warn("'IntegrationRequestMappingHandlerMapping' isn't registered because 'beanFactory'" +
@@ -61,7 +62,7 @@ public class HttpIntegrationConfigurationInitializer implements IntegrationConfi
 	 * the HTTP server components.
 	 */
 	private void registerRequestMappingHandlerMappingIfNecessary(BeanDefinitionRegistry registry) {
-		if (HttpContextUtils.SERVLET_PRESENT &&
+		if (HttpContextUtils.WEB_MVC_PRESENT &&
 				!registry.containsBeanDefinition(HttpContextUtils.HANDLER_MAPPING_BEAN_NAME)) {
 			BeanDefinitionBuilder requestMappingBuilder =
 					BeanDefinitionBuilder.genericBeanDefinition(IntegrationRequestMappingHandlerMapping.class);

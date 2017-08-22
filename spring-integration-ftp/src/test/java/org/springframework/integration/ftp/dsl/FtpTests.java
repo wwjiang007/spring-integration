@@ -17,6 +17,7 @@
 package org.springframework.integration.ftp.dsl;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.isOneOf;
 import static org.junit.Assert.assertEquals;
@@ -26,6 +27,9 @@ import static org.junit.Assert.assertThat;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -37,10 +41,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.IntegrationMessageHeaderAccessor;
 import org.springframework.integration.channel.QueueChannel;
 import org.springframework.integration.config.EnableIntegration;
+import org.springframework.integration.core.MessageSource;
 import org.springframework.integration.dsl.IntegrationFlow;
 import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.dsl.Pollers;
@@ -52,16 +58,21 @@ import org.springframework.integration.file.remote.RemoteFileTemplate;
 import org.springframework.integration.file.remote.gateway.AbstractRemoteFileOutboundGateway;
 import org.springframework.integration.file.support.FileExistsMode;
 import org.springframework.integration.ftp.FtpTestSupport;
+import org.springframework.integration.ftp.inbound.FtpInboundFileSynchronizingMessageSource;
+import org.springframework.integration.ftp.inbound.FtpStreamingMessageSource;
 import org.springframework.integration.ftp.session.FtpRemoteFileTemplate;
 import org.springframework.integration.support.MessageBuilder;
+import org.springframework.integration.test.util.TestUtils;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.GenericMessage;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit4.SpringRunner;
+import org.springframework.util.FileCopyUtils;
 
 /**
  * @author Artem Bilan
  * @author Gary Russell
+ *
  * @since 5.0
  */
 @RunWith(SpringRunner.class)
@@ -71,12 +82,16 @@ public class FtpTests extends FtpTestSupport {
 	@Autowired
 	private IntegrationFlowContext flowContext;
 
+	@Autowired
+	private ApplicationContext context;
+
 	@Test
-	public void testFtpInboundFlow() {
+	public void testFtpInboundFlow() throws IOException {
 		QueueChannel out = new QueueChannel();
 		IntegrationFlow flow = IntegrationFlows.from(Ftp.inboundAdapter(sessionFactory())
 						.preserveTimestamp(true)
 						.remoteDirectory("ftpSource")
+						.maxFetchSize(10)
 						.regexFilter(".*\\.txt$")
 						.localFilename(f -> f.toUpperCase() + ".a")
 						.localDirectory(getTargetLocalDirectory()),
@@ -101,6 +116,10 @@ public class FtpTests extends FtpTestSupport {
 		assertNull(out.receive(10));
 
 		File remoteFile = new File(this.sourceRemoteDirectory, " " + prefix() + "Source1.txt");
+
+		FileOutputStream fos = new FileOutputStream(remoteFile);
+		fos.write("New content".getBytes());
+		fos.close();
 		remoteFile.setLastModified(System.currentTimeMillis() - 1000 * 60 * 60 * 24);
 
 		message = out.receive(10_000);
@@ -109,7 +128,10 @@ public class FtpTests extends FtpTestSupport {
 		assertThat(payload, instanceOf(File.class));
 		file = (File) payload;
 		assertEquals(" FTPSOURCE1.TXT.a", file.getName());
+		assertEquals("New content", FileCopyUtils.copyToString(new FileReader(file)));
 
+		MessageSource<?> source = context.getBean(FtpInboundFileSynchronizingMessageSource.class);
+		assertThat(TestUtils.getPropertyValue(source, "maxFetchSize"), equalTo(10));
 		registration.destroy();
 	}
 
@@ -119,6 +141,7 @@ public class FtpTests extends FtpTestSupport {
 		StandardIntegrationFlow flow = IntegrationFlows.from(
 				Ftp.inboundStreamingAdapter(new FtpRemoteFileTemplate(sessionFactory()))
 						.remoteDirectory("ftpSource")
+						.maxFetchSize(11)
 						.regexFilter(".*\\.txt$"),
 				e -> e.id("ftpInboundAdapter").poller(Pollers.fixedDelay(100)))
 				.channel(out)
@@ -136,6 +159,8 @@ public class FtpTests extends FtpTestSupport {
 		assertThat(message.getHeaders().get(FileHeaders.REMOTE_FILE), isOneOf(" ftpSource1.txt", "ftpSource2.txt"));
 		new IntegrationMessageHeaderAccessor(message).getCloseableResource().close();
 
+		MessageSource<?> source = context.getBean(FtpStreamingMessageSource.class);
+		assertThat(TestUtils.getPropertyValue(source, "maxFetchSize"), equalTo(11));
 		registration.destroy();
 	}
 
@@ -170,6 +195,7 @@ public class FtpTests extends FtpTestSupport {
 				.handle(Ftp.outboundGateway(sessionFactory(),
 						AbstractRemoteFileOutboundGateway.Command.MGET, "payload")
 						.options(AbstractRemoteFileOutboundGateway.Option.RECURSIVE)
+						.fileExistsMode(FileExistsMode.IGNORE)
 						.filterExpression("name matches 'subFtpSource|.*1.txt'")
 						.localDirectoryExpression("'" + getTargetLocalDirectoryName() + "' + #remoteDirectory")
 						.localFilenameExpression("#remoteFileName.replaceFirst('ftpSource', 'localTarget')"))

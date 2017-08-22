@@ -16,6 +16,7 @@
 
 package org.springframework.integration.config;
 
+import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -46,6 +47,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.support.ClassPathXmlApplicationContext;
+import org.springframework.expression.Expression;
 import org.springframework.integration.IntegrationMessageHeaderAccessor;
 import org.springframework.integration.MessageRejectedException;
 import org.springframework.integration.channel.QueueChannel;
@@ -58,8 +60,10 @@ import org.springframework.integration.handler.ReplyRequiredException;
 import org.springframework.integration.handler.ServiceActivatingHandler;
 import org.springframework.integration.message.MessageMatcher;
 import org.springframework.integration.support.MessageBuilder;
+import org.springframework.integration.support.json.JsonObjectMapper;
 import org.springframework.integration.test.util.TestUtils;
 import org.springframework.integration.transformer.MessageTransformingHandler;
+import org.springframework.integration.transformer.ObjectToMapTransformer;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHandler;
@@ -128,7 +132,8 @@ public class ChainParserTests {
 	@Autowired
 	private MessageChannel loggingChannelAdapterChannel;
 
-	@Autowired @Qualifier("logChain.handler")
+	@Autowired
+	@Qualifier("logChain.handler")
 	private MessageHandlerChain logChain;
 
 	@Autowired
@@ -320,7 +325,7 @@ public class ChainParserTests {
 		DirectFieldAccessor dfa = new DirectFieldAccessor(handler);
 		dfa.setPropertyValue("messageLogger", logger);
 
-		this.loggingChannelAdapterChannel.send(MessageBuilder.withPayload(new byte[] {116, 101, 115, 116}).build());
+		this.loggingChannelAdapterChannel.send(MessageBuilder.withPayload(new byte[] { 116, 101, 115, 116 }).build());
 		assertNotNull(log.get());
 		assertEquals("TEST", log.get());
 	}
@@ -391,11 +396,23 @@ public class ChainParserTests {
 				GatewayProxyFactoryBean.class);
 		assertEquals("strings", TestUtils.getPropertyValue(gatewayProxyFactoryBean, "defaultRequestChannelName"));
 		assertEquals("numbers", TestUtils.getPropertyValue(gatewayProxyFactoryBean, "defaultReplyChannelName"));
-		assertEquals(new Long(1000), TestUtils.getPropertyValue(gatewayProxyFactoryBean, "defaultRequestTimeout", Long.class));
-		assertEquals(new Long(100), TestUtils.getPropertyValue(gatewayProxyFactoryBean, "defaultReplyTimeout", Long.class));
+		assertEquals(1000L, TestUtils
+				.getPropertyValue(gatewayProxyFactoryBean, "defaultRequestTimeout", Expression.class).getValue());
+		assertEquals(100L, TestUtils
+				.getPropertyValue(gatewayProxyFactoryBean, "defaultReplyTimeout", Expression.class).getValue());
 
 		assertTrue(this.beanFactory.containsBean("subComponentsIdSupport1$child.objectToStringTransformerWithinChain.handler"));
 		assertTrue(this.beanFactory.containsBean("subComponentsIdSupport1$child.objectToMapTransformerWithinChain.handler"));
+
+		Object transformerHandler = this.beanFactory.getBean("subComponentsIdSupport1$child.objectToMapTransformerWithinChain.handler");
+
+		Object transformer = TestUtils.getPropertyValue(transformerHandler, "transformer");
+
+		assertThat(transformer, instanceOf(ObjectToMapTransformer.class));
+		assertFalse(TestUtils.getPropertyValue(transformer, "shouldFlattenKeys", Boolean.class));
+		assertSame(this.beanFactory.getBean(JsonObjectMapper.class),
+				TestUtils.getPropertyValue(transformer, "jsonObjectMapper"));
+
 		assertTrue(this.beanFactory.containsBean("subComponentsIdSupport1$child.mapToObjectTransformerWithinChain.handler"));
 		assertTrue(this.beanFactory.containsBean("subComponentsIdSupport1$child.controlBusWithinChain.handler"));
 		assertTrue(this.beanFactory.containsBean("subComponentsIdSupport1$child.routerWithinChain.handler"));

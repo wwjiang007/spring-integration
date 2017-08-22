@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2016 the original author or authors.
+ * Copyright 2013-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,7 +69,9 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * (e.g. Spring Integration XML) configurations.
  *
  * @author Artem Bilan
+ *
  * @since 3.0
+ *
  * @see RequestMapping
  * @see RequestMappingHandlerMapping
  */
@@ -113,7 +115,7 @@ public final class IntegrationRequestMappingHandlerMapping extends RequestMappin
 		if (handler instanceof String) {
 			handler = this.getApplicationContext().getBean((String) handler);
 		}
-		RequestMappingInfo mapping = this.getMappingForEndpoint((HttpRequestHandlingEndpointSupport) handler);
+		RequestMappingInfo mapping = this.getMappingForEndpoint((BaseHttpInboundEndpoint) handler);
 		if (mapping != null) {
 			registerMapping(mapping, handler, HANDLE_REQUEST_METHOD);
 		}
@@ -121,7 +123,7 @@ public final class IntegrationRequestMappingHandlerMapping extends RequestMappin
 
 	@Override
 	protected CorsConfiguration initCorsConfiguration(Object handler, Method method, RequestMappingInfo mappingInfo) {
-		CrossOrigin crossOrigin = ((HttpRequestHandlingEndpointSupport) handler).getCrossOrigin();
+		CrossOrigin crossOrigin = ((BaseHttpInboundEndpoint) handler).getCrossOrigin();
 		if (crossOrigin != null) {
 			CorsConfiguration config = new CorsConfiguration();
 			for (String origin : crossOrigin.getOrigin()) {
@@ -154,7 +156,7 @@ public final class IntegrationRequestMappingHandlerMapping extends RequestMappin
 					}
 				}
 			}
-			return config;
+			return config.applyPermitDefaultValues();
 		}
 		return null;
 	}
@@ -164,7 +166,7 @@ public final class IntegrationRequestMappingHandlerMapping extends RequestMappin
 	 * 'Spring Integration HTTP Inbound Endpoint' {@link RequestMapping}.
 	 * @see RequestMappingHandlerMapping#getMappingForMethod
 	 */
-	private RequestMappingInfo getMappingForEndpoint(HttpRequestHandlingEndpointSupport endpoint) {
+	private RequestMappingInfo getMappingForEndpoint(BaseHttpInboundEndpoint endpoint) {
 		final RequestMapping requestMapping = endpoint.getRequestMapping();
 
 		if (ObjectUtils.isEmpty(requestMapping.getPathPatterns())) {

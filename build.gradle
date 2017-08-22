@@ -4,14 +4,14 @@ buildscript {
 	}
 	dependencies {
 		classpath 'io.spring.gradle:dependency-management-plugin:1.0.2.RELEASE'
-		classpath 'io.spring.gradle:spring-io-plugin:0.0.7.RELEASE'
+		classpath 'io.spring.gradle:spring-io-plugin:0.0.8.RELEASE'
 		classpath 'io.spring.gradle:docbook-reference-plugin:0.3.1'
 		classpath 'org.asciidoctor:asciidoctor-gradle-plugin:1.5.0'
 	}
 }
 
 plugins {
-	id 'org.sonarqube' version '2.1'
+	id 'org.sonarqube' version '2.5'
 }
 
 description = 'Spring Integration'
@@ -91,7 +91,6 @@ subprojects { subproject ->
 		aspectjVersion = '1.8.10'
 		apacheSshdVersion = '1.4.0'
 		boonVersion = '0.34'
-		chronicleVersion = '3.5.3'
 		commonsDbcp2Version = '2.1.1'
 		commonsIoVersion = '2.4'
 		commonsNetVersion = '3.5'
@@ -106,7 +105,7 @@ subprojects { subproject ->
 		hibernateVersion = '5.2.10.Final'
 		hsqldbVersion = '2.4.0'
 		h2Version = '1.4.194'
-		jackson2Version = '2.9.0.pr3'
+		jackson2Version = '2.9.0.pr4'
 		javaxActivationVersion = '1.1.1'
 		javaxMailVersion = '1.6.0-rc1'
 		jedisVersion = '2.9.0'
@@ -115,7 +114,7 @@ subprojects { subproject ->
 		jpaApiVersion = '2.1.1'
 		jrubyVersion = '9.1.5.0'
 		jschVersion = '0.1.54'
-		jsonpathVersion = '2.2.0'
+		jsonpathVersion = '2.3.0'
 		junitVersion = '4.12'
 		jythonVersion = '2.5.3'
 		kryoShadedVersion = '3.0.3'
@@ -124,23 +123,23 @@ subprojects { subproject ->
 		mysqlVersion = '5.1.41'
 		pahoMqttClientVersion = '1.1.1'
 		postgresVersion = '42.0.0'
-		reactorNettyVersion = '0.6.3.RELEASE'
-		reactorVersion = '3.1.0.M1'
+		reactorNettyVersion = '0.7.0.BUILD-SNAPSHOT'
+		reactorVersion = '3.1.0.BUILD-SNAPSHOT'
 		romeToolsVersion = '1.7.2'
 		servletApiVersion = '3.1.0'
 		slf4jVersion = "1.7.25"
 		smackVersion = '4.1.9'
-		springAmqpVersion = project.hasProperty('springAmqpVersion') ? project.springAmqpVersion : '2.0.0.BUILD-SNAPSHOT'
-		springDataJpaVersion = '2.0.0.BUILD-SNAPSHOT'
-		springDataMongoVersion = '2.0.0.BUILD-SNAPSHOT'
-		springDataRedisVersion = '2.0.0.BUILD-SNAPSHOT'
-		springGemfireVersion = '2.0.0.BUILD-SNAPSHOT'
+		springAmqpVersion = project.hasProperty('springAmqpVersion') ? project.springAmqpVersion : '2.0.0.M5'
+		springDataJpaVersion = '2.0.0.RC2'
+		springDataMongoVersion = '2.0.0.RC2'
+		springDataRedisVersion = '2.0.0.RC2'
+		springGemfireVersion = '2.0.0.RC2'
 		springSecurityVersion = '5.0.0.BUILD-SNAPSHOT'
-		springSocialTwitterVersion = '2.0.0.BUILD-SNAPSHOT'
+		springSocialTwitterVersion = '2.0.0.M4'
 		springRetryVersion = '1.2.0.RELEASE'
 		springVersion = project.hasProperty('springVersion') ? project.springVersion : '5.0.0.BUILD-SNAPSHOT'
 		springWsVersion = '2.4.0.RELEASE'
-		tomcatVersion = "8.5.14"
+		tomcatVersion = "8.5.16"
 		xmlUnitVersion = '1.6'
 		xstreamVersion = '1.4.7'
 	}
@@ -152,7 +151,7 @@ subprojects { subproject ->
 	}
 
 	jacoco {
-		toolVersion = "0.7.8"
+		toolVersion = "0.7.9"
 	}
 
 	// dependencies that are common across all java projects
@@ -193,7 +192,7 @@ subprojects { subproject ->
 		reports {
 			xml.enabled false
 			csv.enabled false
-			html.destination "${buildDir}/reports/jacoco/html"
+			html.destination file("${buildDir}/reports/jacoco/html")
 		}
 	}
 
@@ -205,7 +204,13 @@ subprojects { subproject ->
 		}
 	}
 
-	task testAll(type: Test, dependsOn: [checkstyleMain, checkstyleTest])
+	task testAll(type: Test, dependsOn: check)
+
+	gradle.taskGraph.whenReady { graph ->
+		if (graph.hasTask(testAll)) {
+			test.enabled = false
+		}
+	}
 
 	tasks.withType(Test).all {
 		// suppress all console output during testing unless running `gradle -i`
@@ -231,7 +236,7 @@ subprojects { subproject ->
 
 	checkstyle {
 		configFile = file("$rootDir/src/checkstyle/checkstyle.xml")
-		toolVersion = "6.16.1"
+		toolVersion = "8.0"
 	}
 
 	artifacts {
@@ -285,7 +290,6 @@ project('spring-integration-amqp') {
 		}
 		testCompile("org.springframework.amqp:spring-rabbit-junit:$springAmqpVersion")
 		testCompile project(":spring-integration-stream")
-		testCompile project(":spring-integration-http") // need to test INT-2713
 	}
 }
 
@@ -311,7 +315,8 @@ project('spring-integration-core') {
 		compile("com.esotericsoftware:kryo-shaded:$kryoShadedVersion", optional)
 
 		testCompile ("org.aspectj:aspectjweaver:$aspectjVersion")
-		compile "io.projectreactor.addons:reactor-test:$reactorVersion"
+		testCompile "io.projectreactor:reactor-test:$reactorVersion"
+		testCompile ("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:$jackson2Version")
 	}
 }
 
@@ -338,7 +343,10 @@ project('spring-integration-file') {
 		testCompile project(":spring-integration-redis")
 		testCompile project(":spring-integration-redis").sourceSets.test.output
 		testCompile project(":spring-integration-gemfire")
+		testCompile project(":spring-integration-jdbc")
+		testCompile "com.h2database:h2:$h2Version"
 		testCompile "redis.clients:jedis:$jedisVersion"
+		testCompile "io.projectreactor:reactor-test:$reactorVersion"
 	}
 }
 
@@ -389,10 +397,8 @@ project('spring-integration-http') {
 	dependencies {
 		compile project(":spring-integration-core")
 		compile "org.springframework:spring-webmvc:$springVersion"
-		compile "org.springframework:spring-webflux:$springVersion"
 		compile ("javax.servlet:javax.servlet-api:$servletApiVersion", provided)
 		compile ("com.rometools:rome:$romeToolsVersion", optional)
-		compile ("io.projectreactor.ipc:reactor-netty:$reactorNettyVersion" , optional)
 
 		testCompile project(":spring-integration-security")
 		testCompile "org.springframework.security:spring-security-config:$springSecurityVersion"
@@ -469,8 +475,6 @@ project('spring-integration-jpa') {
 		}
 
 		testCompile "com.h2database:h2:$h2Version"
-		testCompile "org.hsqldb:hsqldb:$hsqldbVersion"
-		testCompile "org.apache.derby:derby:$derbyVersion"
 
 		testCompile "org.hibernate:hibernate-entitymanager:$hibernateVersion"
 
@@ -634,12 +638,27 @@ project('spring-integration-twitter') {
 			exclude group: 'org.springframework', module: 'spring-expression'
 			exclude group: 'org.springframework', module: 'spring-web'
 			exclude group: 'org.springframework', module: 'spring-webmvc'
-
 		}
 		compile("javax.activation:activation:$javaxActivationVersion", optional)
 		testCompile project(":spring-integration-redis")
 		testCompile project(":spring-integration-redis").sourceSets.test.output
 		testCompile "redis.clients:jedis:$jedisVersion"
+	}
+}
+
+project('spring-integration-webflux') {
+	description = 'Spring Integration HTTP Support'
+	dependencies {
+		compile (project(":spring-integration-http")) {
+			exclude group: 'org.springframework', module: 'spring-webmvc'
+		}
+		compile "org.springframework:spring-webflux:$springVersion"
+		compile ("io.projectreactor.ipc:reactor-netty:$reactorNettyVersion" , optional)
+
+		testCompile "org.springframework:spring-webmvc:$springVersion"
+		testCompile "org.springframework.security:spring-security-config:$springSecurityVersion"
+		testCompile "org.springframework.security:spring-security-test:$springSecurityVersion"
+		testCompile "io.projectreactor:reactor-test:$reactorVersion"
 	}
 }
 

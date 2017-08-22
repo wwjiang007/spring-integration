@@ -22,7 +22,10 @@ import java.lang.reflect.Type;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -39,17 +42,24 @@ import org.springframework.beans.TypeConverter;
 import org.springframework.beans.factory.BeanClassLoaderAware;
 import org.springframework.beans.factory.BeanDefinitionStoreException;
 import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.BeanInitializationException;
 import org.springframework.beans.factory.FactoryBean;
+import org.springframework.core.MethodParameter;
 import org.springframework.core.convert.ConversionService;
 import org.springframework.core.task.AsyncListenableTaskExecutor;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.core.task.support.TaskExecutorAdapter;
+import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
 import org.springframework.expression.common.LiteralExpression;
+import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.integration.annotation.Gateway;
 import org.springframework.integration.annotation.GatewayHeader;
 import org.springframework.integration.endpoint.AbstractEndpoint;
+import org.springframework.integration.expression.ExpressionUtils;
+import org.springframework.integration.expression.ValueExpression;
+import org.springframework.integration.support.DefaultMessageBuilderFactory;
 import org.springframework.integration.support.channel.BeanFactoryChannelResolver;
 import org.springframework.integration.support.management.TrackableComponent;
 import org.springframework.integration.support.utils.IntegrationUtils;
@@ -58,6 +68,7 @@ import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.core.DestinationResolver;
+import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
@@ -99,9 +110,9 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 
 	private volatile String errorChannelName;
 
-	private volatile Long defaultRequestTimeout;
+	private volatile Expression defaultRequestTimeout;
 
-	private volatile Long defaultReplyTimeout;
+	private volatile Expression defaultReplyTimeout;
 
 	private volatile DestinationResolver<MessageChannel> channelResolver;
 
@@ -130,6 +141,8 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 	private volatile GatewayMethodMetadata globalMethodMetadata;
 
 	private volatile MethodArgsMessageMapper argsMapper;
+
+	private EvaluationContext evaluationContext = new StandardEvaluationContext();
 
 	/**
 	 * Create a Factory whose service interface type can be configured by setter injection.
@@ -223,23 +236,75 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 	}
 
 	/**
-	 * Set the default timeout value for sending request messages. If not
-	 * explicitly configured with an annotation, this value will be used.
+	 * Set the default timeout value for sending request messages. If not explicitly
+	 * configured with an annotation, or on a method element, this value will be used.
 	 *
 	 * @param defaultRequestTimeout the timeout value in milliseconds
 	 */
 	public void setDefaultRequestTimeout(Long defaultRequestTimeout) {
+		this.defaultRequestTimeout = new ValueExpression<>(defaultRequestTimeout);
+	}
+
+	/**
+	 * Set an expression to be evaluated to determine the default timeout value for
+	 * sending request messages. If not explicitly configured with an annotation, or on a
+	 * method element, this value will be used.
+	 *
+	 * @param defaultRequestTimeout the timeout value in milliseconds
+	 * @since 5.0
+	 */
+	public void setDefaultRequestTimeoutExpression(Expression defaultRequestTimeout) {
 		this.defaultRequestTimeout = defaultRequestTimeout;
 	}
 
 	/**
-	 * Set the default timeout value for receiving reply messages. If not
-	 * explicitly configured with an annotation, this value will be used.
+	 * Set an expression to be evaluated to determine the default timeout value for
+	 * sending request messages. If not explicitly configured with an annotation, or on a
+	 * method element, this value will be used.
+	 *
+	 * @param defaultRequestTimeout the timeout value in milliseconds
+	 * @since 5.0
+	 */
+	public void setDefaultRequestTimeoutExpressionString(String defaultRequestTimeout) {
+		if (StringUtils.hasText(defaultRequestTimeout)) {
+			this.defaultRequestTimeout = ExpressionUtils.longExpression(defaultRequestTimeout);
+		}
+	}
+
+	/**
+	 * Set the default timeout value for receiving reply messages. If not explicitly
+	 * configured with an annotation, or on a method element, this value will be used.
 	 *
 	 * @param defaultReplyTimeout the timeout value in milliseconds
 	 */
 	public void setDefaultReplyTimeout(Long defaultReplyTimeout) {
+		this.defaultReplyTimeout = new ValueExpression<>(defaultReplyTimeout);
+	}
+
+	/**
+	 * Set an expression to be evaluated to determine the default timeout value for
+	 * receiving reply messages. If not explicitly configured with an annotation, or on a
+	 * method element, this value will be used.
+	 *
+	 * @param defaultReplyTimeout the timeout value in milliseconds
+	 * @since 5.0
+	 */
+	public void setDefaultReplyTimeoutExpression(Expression defaultReplyTimeout) {
 		this.defaultReplyTimeout = defaultReplyTimeout;
+	}
+
+	/**
+	 * Set an expression to be evaluated to determine the default timeout value for
+	 * receiving reply messages. If not explicitly configured with an annotation, or on a
+	 * method element, this value will be used.
+	 *
+	 * @param defaultReplyTimeout the timeout value in milliseconds
+	 * @since 5.0
+	 */
+	public void setDefaultReplyTimeoutExpressionString(String defaultReplyTimeout) {
+		if (StringUtils.hasText(defaultReplyTimeout)) {
+			this.defaultReplyTimeout = ExpressionUtils.longExpression(defaultReplyTimeout);
+		}
 	}
 
 	@Override
@@ -336,7 +401,7 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 					this.asyncSubmitListenableType = submitType.getClass();
 				}
 			}
-
+			this.evaluationContext = ExpressionUtils.createStandardEvaluationContext(getBeanFactory());
 			this.initialized = true;
 		}
 	}
@@ -428,11 +493,25 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 			hasPayloadExpression = (metadata != null) && StringUtils.hasText(metadata.getPayloadExpression());
 		}
 		if (paramCount == 0 && !hasPayloadExpression) {
+			Long receiveTimeout = null;
+			if (gateway.getReceiveTimeoutExpression() != null) {
+				receiveTimeout = gateway.getReceiveTimeoutExpression().getValue(this.evaluationContext, Long.class);
+			}
 			if (shouldReply) {
 				if (shouldReturnMessage) {
-					return gateway.receiveMessage();
+					if (receiveTimeout != null) {
+						return gateway.receiveMessage(receiveTimeout);
+					}
+					else {
+						return gateway.receiveMessage();
+					}
 				}
-				response = gateway.receive();
+				if (receiveTimeout != null) {
+					response = gateway.receive(receiveTimeout);
+				}
+				else {
+					response = gateway.receive();
+				}
 			}
 		}
 		else {
@@ -472,8 +551,8 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 		Gateway gatewayAnnotation = method.getAnnotation(Gateway.class);
 		String requestChannelName = null;
 		String replyChannelName = null;
-		Long requestTimeout = this.defaultRequestTimeout;
-		Long replyTimeout = this.defaultReplyTimeout;
+		Expression requestTimeout = this.defaultRequestTimeout;
+		Expression replyTimeout = this.defaultReplyTimeout;
 		String payloadExpression = this.globalMethodMetadata != null
 				? this.globalMethodMetadata.getPayloadExpression()
 				: null;
@@ -489,10 +568,16 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 			 * no longer work as expected; they will need to use, say, -1 instead.
 			 */
 			if (requestTimeout == null || gatewayAnnotation.requestTimeout() != Long.MIN_VALUE) {
-				requestTimeout = gatewayAnnotation.requestTimeout();
+				requestTimeout = new ValueExpression<>(gatewayAnnotation.requestTimeout());
+			}
+			if (StringUtils.hasText(gatewayAnnotation.requestTimeoutExpression())) {
+				requestTimeout = ExpressionUtils.longExpression(gatewayAnnotation.requestTimeoutExpression());
 			}
 			if (replyTimeout == null || gatewayAnnotation.replyTimeout() != Long.MIN_VALUE) {
-				replyTimeout = gatewayAnnotation.replyTimeout();
+				replyTimeout = new ValueExpression<>(gatewayAnnotation.replyTimeout());
+			}
+			if (StringUtils.hasText(gatewayAnnotation.replyTimeoutExpression())) {
+				replyTimeout = ExpressionUtils.longExpression(gatewayAnnotation.replyTimeoutExpression());
 			}
 			if (payloadExpression == null || StringUtils.hasText(gatewayAnnotation.payloadExpression())) {
 				payloadExpression = gatewayAnnotation.payloadExpression();
@@ -529,11 +614,11 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 				replyChannelName = methodMetadata.getReplyChannelName();
 				String reqTimeout = methodMetadata.getRequestTimeout();
 				if (StringUtils.hasText(reqTimeout)) {
-					requestTimeout = this.convert(reqTimeout, Long.class);
+					requestTimeout = ExpressionUtils.longExpression(reqTimeout);
 				}
 				String repTimeout = methodMetadata.getReplyTimeout();
 				if (StringUtils.hasText(repTimeout)) {
-					replyTimeout = this.convert(repTimeout, Long.class);
+					replyTimeout = ExpressionUtils.longExpression(repTimeout);
 				}
 			}
 		}
@@ -544,6 +629,33 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 			headers = new HashMap<>();
 			headers.put(MessageHeaders.ERROR_CHANNEL, errorChannel);
 		}
+
+		if (getMessageBuilderFactory() instanceof DefaultMessageBuilderFactory) {
+			Set<String> headerNames = new HashSet<>(headerExpressions.keySet());
+
+			if (this.globalMethodMetadata != null) {
+				headerNames.addAll(this.globalMethodMetadata.getHeaderExpressions().keySet());
+			}
+
+			List<MethodParameter> methodParameters = GatewayMethodInboundMessageMapper.getMethodParameterList(method);
+
+			for (MethodParameter methodParameter : methodParameters) {
+				Header header = methodParameter.getParameterAnnotation(Header.class);
+				if (header != null) {
+					String headerName = GatewayMethodInboundMessageMapper.determineHeaderName(header, methodParameter);
+					headerNames.add(headerName);
+				}
+			}
+
+			for (String header : headerNames) {
+				if ((MessageHeaders.ID.equals(header) || MessageHeaders.TIMESTAMP.equals(header))) {
+					throw new BeanInitializationException(
+							"Messaging Gateway cannot override 'id' and 'timestamp' read-only headers.\n" +
+									"Wrong headers configuration for " + getComponentName());
+				}
+			}
+		}
+
 		GatewayMethodInboundMessageMapper messageMapper = new GatewayMethodInboundMessageMapper(method,
 				headerExpressions,
 				this.globalMethodMetadata != null ? this.globalMethodMetadata.getHeaderExpressions() : null,
@@ -551,7 +663,7 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 		if (StringUtils.hasText(payloadExpression)) {
 			messageMapper.setPayloadExpression(payloadExpression);
 		}
-		messageMapper.setBeanFactory(this.getBeanFactory());
+		messageMapper.setBeanFactory(getBeanFactory());
 		MethodInvocationGateway gateway = new MethodInvocationGateway(messageMapper);
 
 		if (this.errorChannel != null) {
@@ -589,17 +701,26 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 		if (requestTimeout == null) {
 			gateway.setRequestTimeout(-1);
 		}
+		else if (requestTimeout instanceof ValueExpression) {
+			gateway.setRequestTimeout(requestTimeout.getValue(Long.class));
+		}
 		else {
-			gateway.setRequestTimeout(requestTimeout);
+			messageMapper.setSendTimeoutExpression(requestTimeout);
 		}
 		if (replyTimeout == null) {
 			gateway.setReplyTimeout(-1);
 		}
+		else if (replyTimeout instanceof ValueExpression) {
+			gateway.setReplyTimeout(replyTimeout.getValue(Long.class));
+		}
 		else {
-			gateway.setReplyTimeout(replyTimeout);
+			messageMapper.setReplyTimeoutExpression(replyTimeout);
 		}
 		if (this.getBeanFactory() != null) {
 			gateway.setBeanFactory(this.getBeanFactory());
+		}
+		if (replyTimeout != null) {
+			gateway.setReceiveTimeoutExpression(replyTimeout);
 		}
 		gateway.setShouldTrack(this.shouldTrack);
 		gateway.afterPropertiesSet();
@@ -641,7 +762,7 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 	private static boolean hasReturnParameterizedWithMessage(Method method, boolean runningOnCallerThread) {
 		if (!runningOnCallerThread &&
 				(Future.class.isAssignableFrom(method.getReturnType())
-				|| Mono.class.isAssignableFrom(method.getReturnType()))) {
+						|| Mono.class.isAssignableFrom(method.getReturnType()))) {
 			Type returnType = method.getGenericReturnType();
 			if (returnType instanceof ParameterizedType) {
 				Type[] typeArgs = ((ParameterizedType) returnType).getActualTypeArguments();
@@ -662,8 +783,18 @@ public class GatewayProxyFactoryBean extends AbstractEndpoint
 
 	private static final class MethodInvocationGateway extends MessagingGatewaySupport {
 
+		Expression receiveTimeoutExpression;
+
 		MethodInvocationGateway(GatewayMethodInboundMessageMapper messageMapper) {
-			this.setRequestMapper(messageMapper);
+			setRequestMapper(messageMapper);
+		}
+
+		Expression getReceiveTimeoutExpression() {
+			return this.receiveTimeoutExpression;
+		}
+
+		void setReceiveTimeoutExpression(Expression receiveTimeoutExpression) {
+			this.receiveTimeoutExpression = receiveTimeoutExpression;
 		}
 
 	}

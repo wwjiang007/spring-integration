@@ -14,29 +14,35 @@
  * limitations under the License.
  */
 
-package org.springframework.integration.http.outbound;
+package org.springframework.integration.webflux.outbound;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.function.Supplier;
 
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.core.ResolvableType;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.expression.Expression;
 import org.springframework.expression.common.LiteralExpression;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ReactiveHttpInputMessage;
 import org.springframework.http.ResponseEntity;
 import org.springframework.integration.expression.ValueExpression;
+import org.springframework.integration.http.outbound.AbstractHttpRequestExecutingMessageHandler;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHandler;
 import org.springframework.util.Assert;
+import org.springframework.util.MimeType;
+import org.springframework.web.reactive.function.BodyExtractor;
 import org.springframework.web.reactive.function.BodyExtractors;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import reactor.core.publisher.Mono;
 
@@ -49,9 +55,9 @@ import reactor.core.publisher.Mono;
  *
  * @since 5.0
  *
- * @see HttpRequestExecutingMessageHandler
+ * @see org.springframework.integration.http.outbound.HttpRequestExecutingMessageHandler
  */
-public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequestExecutingMessageHandler {
+public class WebFluxRequestExecutingMessageHandler extends AbstractHttpRequestExecutingMessageHandler {
 
 	private final WebClient webClient;
 
@@ -59,7 +65,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 	 * Create a handler that will send requests to the provided URI.
 	 * @param uri The URI.
 	 */
-	public ReactiveHttpRequestExecutingMessageHandler(URI uri) {
+	public WebFluxRequestExecutingMessageHandler(URI uri) {
 		this(new ValueExpression<>(uri));
 	}
 
@@ -67,7 +73,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 	 * Create a handler that will send requests to the provided URI.
 	 * @param uri The URI.
 	 */
-	public ReactiveHttpRequestExecutingMessageHandler(String uri) {
+	public WebFluxRequestExecutingMessageHandler(String uri) {
 		this(uri, null);
 	}
 
@@ -75,7 +81,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 	 * Create a handler that will send requests to the provided URI Expression.
 	 * @param uriExpression The URI expression.
 	 */
-	public ReactiveHttpRequestExecutingMessageHandler(Expression uriExpression) {
+	public WebFluxRequestExecutingMessageHandler(Expression uriExpression) {
 		this(uriExpression, null);
 	}
 
@@ -84,7 +90,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 	 * @param uri The URI.
 	 * @param webClient The WebClient to use.
 	 */
-	public ReactiveHttpRequestExecutingMessageHandler(String uri, WebClient webClient) {
+	public WebFluxRequestExecutingMessageHandler(String uri, WebClient webClient) {
 		this(new LiteralExpression(uri), webClient);
 		/*
 		 *  We'd prefer to do this assertion first, but the compiler doesn't allow it. However,
@@ -100,7 +106,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 	 * {@link BeanFactory}.
 	 * @param webClient The WebClient to use.
 	 */
-	public ReactiveHttpRequestExecutingMessageHandler(Expression uriExpression, WebClient webClient) {
+	public WebFluxRequestExecutingMessageHandler(Expression uriExpression, WebClient webClient) {
 		super(uriExpression);
 		this.webClient = (webClient == null ? WebClient.create() : webClient);
 		this.setAsync(true);
@@ -108,7 +114,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 
 	@Override
 	public String getComponentType() {
-		return (isExpectReply() ? "http:outbound-reactive-gateway" : "http:outbound-reactive-channel-adapter");
+		return (isExpectReply() ? "webflux:outbound-gateway" : "webflux:outbound-channel-adapter");
 	}
 
 	@Override
@@ -118,7 +124,7 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 		WebClient.RequestBodySpec requestSpec =
 				this.webClient.method(httpMethod)
 						.uri(b -> uriSupplier.get())
-						.headers(httpRequest.getHeaders());
+						.headers(headers -> headers.putAll(httpRequest.getHeaders()));
 
 		if (httpRequest.hasBody()) {
 			requestSpec.body(BodyInserters.fromObject(httpRequest.getBody()));
@@ -128,29 +134,47 @@ public class ReactiveHttpRequestExecutingMessageHandler extends AbstractHttpRequ
 				.doOnNext(response -> {
 					HttpStatus httpStatus = response.statusCode();
 					if (httpStatus.is4xxClientError() || httpStatus.is5xxServerError()) {
-						throw new WebClientException(
-								"ClientResponse has erroneous status code: " + httpStatus.value() +
-										" " + httpStatus.getReasonPhrase());
+						throw new WebClientResponseException(
+								String.format("ClientResponse has erroneous status code: %d %s",
+										response.statusCode().value(),
+										response.statusCode().getReasonPhrase()),
+								httpStatus.value(),
+								httpStatus.getReasonPhrase(),
+								response.headers()
+										.asHttpHeaders(),
+								response.body(BodyExtractors.toDataBuffers())
+										.reduce(DataBuffer::write)
+										.map(dataBuffer -> {
+											byte[] bytes = new byte[dataBuffer.readableByteCount()];
+											dataBuffer.read(bytes);
+											DataBufferUtils.release(dataBuffer);
+											return bytes;
+										})
+										.block(),
+								response.headers()
+										.contentType()
+										.map(MimeType::getCharset)
+										.orElse(StandardCharsets.ISO_8859_1));
 					}
 				});
 
 		if (isExpectReply()) {
-			ResolvableType responseType;
+			BodyExtractor<? extends Mono<?>, ReactiveHttpInputMessage> bodyExtractor;
 
 			if (expectedResponseType instanceof ParameterizedTypeReference<?>) {
-				responseType = ResolvableType.forType(((ParameterizedTypeReference<?>) expectedResponseType).getType());
+				bodyExtractor = BodyExtractors.toMono((ParameterizedTypeReference<?>) expectedResponseType);
 			}
 			else if (expectedResponseType != null) {
-				responseType = ResolvableType.forClass((Class<?>) expectedResponseType);
+				bodyExtractor = BodyExtractors.toMono((Class<?>) expectedResponseType);
 			}
 			else {
-				responseType = null;
+				bodyExtractor = null;
 			}
 
 			return responseMono
 					.map(response ->
-							new ResponseEntity<>(responseType != null
-									? response.body(BodyExtractors.toMono(responseType)).block()
+							new ResponseEntity<>(bodyExtractor != null
+									? response.body(bodyExtractor).block()
 									: null,
 									response.headers().asHttpHeaders(),
 									response.statusCode()))

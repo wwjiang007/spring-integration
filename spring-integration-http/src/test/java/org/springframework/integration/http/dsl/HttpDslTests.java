@@ -20,6 +20,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.Collections;
 import java.util.List;
@@ -32,23 +33,21 @@ import org.springframework.beans.DirectFieldAccessor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.reactive.ClientHttpConnector;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.config.EnableIntegration;
 import org.springframework.integration.dsl.IntegrationFlow;
 import org.springframework.integration.dsl.IntegrationFlows;
+import org.springframework.integration.http.HttpHeaders;
 import org.springframework.integration.http.outbound.HttpRequestExecutingMessageHandler;
-import org.springframework.integration.http.outbound.ReactiveHttpRequestExecutingMessageHandler;
 import org.springframework.integration.security.channel.ChannelSecurityInterceptor;
 import org.springframework.integration.security.channel.SecuredChannel;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.security.access.AccessDecisionManager;
 import org.springframework.security.access.vote.AffirmativeBased;
 import org.springframework.security.access.vote.RoleVoter;
 import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
+import org.springframework.security.config.annotation.authentication.configurers.provisioning.InMemoryUserDetailsManagerConfigurer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
@@ -56,17 +55,12 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.test.context.web.WebAppConfiguration;
 import org.springframework.test.web.client.MockMvcClientHttpRequestFactory;
-import org.springframework.test.web.reactive.server.HttpHandlerConnector;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.context.WebApplicationContext;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.servlet.config.annotation.EnableWebMvc;
-import org.springframework.web.util.UriComponentsBuilder;
-
-import reactor.core.publisher.Mono;
 
 /**
  * @author Artem Bilan
@@ -84,9 +78,6 @@ public class HttpDslTests {
 
 	@Autowired
 	private HttpRequestExecutingMessageHandler serviceInternalGatewayHandler;
-
-	@Autowired
-	private ReactiveHttpRequestExecutingMessageHandler serviceInternalReactiveGatewayHandler;
 
 	private MockMvc mockMvc;
 
@@ -107,58 +98,43 @@ public class HttpDslTests {
 
 		this.mockMvc.perform(
 				get("/service")
-						.with(httpBasic("guest", "guest"))
+						.with(httpBasic("admin", "admin"))
 						.param("name", "foo"))
 				.andExpect(
 						content()
 								.string("FOO"));
-	}
-
-	@Test
-	public void testHttpReactiveProxyFlow() throws Exception {
-		ClientHttpConnector httpConnector = new HttpHandlerConnector((request, response) -> {
-			response.setStatusCode(HttpStatus.OK);
-			response.getHeaders().setContentType(MediaType.TEXT_PLAIN);
-
-			return response.writeWith(Mono.just(response.bufferFactory().wrap("FOO".getBytes())))
-					.then(Mono.defer(response::setComplete));
-		});
-
-		WebClient webClient = WebClient.builder()
-				.clientConnector(httpConnector)
-				.build();
-
-		new DirectFieldAccessor(this.serviceInternalReactiveGatewayHandler)
-				.setPropertyValue("webClient", webClient);
 
 		this.mockMvc.perform(
-				get("/service2")
-						.with(httpBasic("guest", "guest"))
-						.param("name", "foo"))
+				get("/service")
+						.with(httpBasic("user", "user"))
+						.param("name", "name"))
 				.andExpect(
-						content()
-								.string("FOO"));
+						status()
+								.isForbidden());
 	}
 
-
 	@Configuration
-	@EnableWebMvc
 	@EnableWebSecurity
 	@EnableIntegration
 	public static class ContextConfiguration extends WebSecurityConfigurerAdapter {
 
 		@Override
 		protected void configure(AuthenticationManagerBuilder auth) throws Exception {
-			auth.inMemoryAuthentication()
-					.withUser("guest")
-					.password("guest")
+			InMemoryUserDetailsManagerConfigurer<?> userDetailsManagerConfigurer =
+					auth.inMemoryAuthentication();
+			userDetailsManagerConfigurer.withUser("admin")
+					.password("admin")
 					.roles("ADMIN");
+			userDetailsManagerConfigurer.withUser("user")
+					.password("user")
+					.roles("USER");
 		}
 
 		@Override
 		protected void configure(HttpSecurity http) throws Exception {
 			http.authorizeRequests()
-					.anyRequest().hasRole("ADMIN")
+					.antMatchers("/service/internal/**").hasRole("ADMIN")
+					.anyRequest().permitAll()
 					.and()
 					.httpBasic()
 					.and()
@@ -187,7 +163,8 @@ public class HttpDslTests {
 		public IntegrationFlow httpProxyFlow() {
 			return IntegrationFlows
 					.from(Http.inboundGateway("/service")
-							.requestMapping(r -> r.params("name")))
+							.requestMapping(r -> r.params("name"))
+							.errorChannel("httpProxyErrorFlow.input"))
 					.handle(Http.<MultiValueMap<String, String>>outboundGateway("/service/internal?{params}")
 									.uriVariable("params", "payload")
 									.expectedResponseType(String.class),
@@ -196,19 +173,13 @@ public class HttpDslTests {
 		}
 
 		@Bean
-		public IntegrationFlow httpReactiveProxyFlow() {
-			return IntegrationFlows
-					.from(Http.inboundGateway("/service2")
-							.requestMapping(r -> r.params("name")))
-					.handle(Http.<MultiValueMap<String, String>>outboundReactiveGateway(m ->
-									UriComponentsBuilder.fromUriString("http://www.springsource.org/spring-integration")
-											.queryParams(m.getPayload())
-											.build()
-											.toUri())
-									.httpMethod(HttpMethod.GET)
-									.expectedResponseType(String.class),
-							e -> e.id("serviceInternalReactiveGateway"))
-					.get();
+		public IntegrationFlow httpProxyErrorFlow() {
+			return f -> f
+					.transform(Throwable::getCause)
+					.<HttpClientErrorException>handle((p, h) ->
+							MessageBuilder.withPayload(p.getResponseBodyAsString())
+									.setHeader(HttpHeaders.STATUS_CODE, p.getStatusCode())
+									.build());
 		}
 
 		@Bean

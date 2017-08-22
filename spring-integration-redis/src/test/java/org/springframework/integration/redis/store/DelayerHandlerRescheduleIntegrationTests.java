@@ -22,6 +22,7 @@ import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.log4j.Level;
@@ -47,11 +48,12 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 /**
  * @author Artem Bilan
  * @author Gary Russell
+ *
  * @since 3.0
  */
 public class DelayerHandlerRescheduleIntegrationTests extends RedisAvailableTests {
 
-	public static final String DELAYER_ID = "delayerWithRedisMS";
+	public static final String DELAYER_ID = "delayerWithRedisMS" + UUID.randomUUID();
 
 	@Rule
 	public LongRunningIntegrationTest longTests = new LongRunningIntegrationTest();
@@ -83,7 +85,7 @@ public class DelayerHandlerRescheduleIntegrationTests extends RedisAvailableTest
 				(ThreadPoolTaskScheduler) IntegrationContextUtils.getTaskScheduler(context);
 		taskScheduler.shutdown();
 		taskScheduler.getScheduledExecutor().awaitTermination(10, TimeUnit.SECONDS);
-		context.destroy();
+		context.close();
 
 		try {
 			context.getBean("input", MessageChannel.class);
@@ -128,7 +130,7 @@ public class DelayerHandlerRescheduleIntegrationTests extends RedisAvailableTest
 		assertEquals(0, messageStore.messageGroupSize(delayerMessageGroupId));
 
 		messageStore.removeMessageGroup(delayerMessageGroupId);
-		context.destroy();
+		context.close();
 	}
 
 }

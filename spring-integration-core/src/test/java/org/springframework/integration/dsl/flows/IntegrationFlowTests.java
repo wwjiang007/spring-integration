@@ -26,8 +26,12 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import org.aopalliance.aop.Advice;
 import org.aopalliance.intercept.MethodInterceptor;
@@ -420,11 +424,33 @@ public class IntegrationFlowTests {
 	}
 
 	@Autowired
-	private ErrorRecovererFlowGateway errorRecovererFlowGateway;
+	private Function<String, String> errorRecovererFlowGateway;
 
 	@Test
 	public void testReplyChannelFromReplyMessage() {
-		assertEquals("foo", this.errorRecovererFlowGateway.testIt("foo"));
+		assertEquals("foo", this.errorRecovererFlowGateway.apply("foo"));
+	}
+
+	@Autowired
+	private MessageChannel dedicatedQueueChannel;
+
+	@Autowired
+	private SubscribableChannel dedicatedResults;
+
+	@Test
+	public void testDedicatedPollingThreadFlow() throws InterruptedException {
+		AtomicReference<String> threadNameReference = new AtomicReference<>();
+		CountDownLatch resultLatch = new CountDownLatch(1);
+		this.dedicatedResults.subscribe(m -> {
+			threadNameReference.set(Thread.currentThread().getName());
+			resultLatch.countDown();
+		});
+
+		this.dedicatedQueueChannel.send(new GenericMessage<>("foo"));
+
+		assertTrue(resultLatch.await(10, TimeUnit.SECONDS));
+
+		assertEquals("dedicatedTaskScheduler-1", threadNameReference.get());
 	}
 
 	@MessagingGateway
@@ -694,7 +720,7 @@ public class IntegrationFlowTests {
 
 		@Bean
 		public IntegrationFlow errorRecovererFlow() {
-			return IntegrationFlows.from(ErrorRecovererFlowGateway.class)
+			return IntegrationFlows.from(Function.class)
 					.handle((GenericHandler<?>) (p, h) -> {
 						throw new RuntimeException("intentional");
 					}, e -> e.advice(retryAdvice()))
@@ -721,12 +747,21 @@ public class IntegrationFlowTests {
 
 		}
 
-	}
+		@Bean
+		public IntegrationFlow dedicatedPollingThreadFlow() {
+			return IntegrationFlows.from(MessageChannels.queue("dedicatedQueueChannel"))
+					.bridge(e -> e
+							.poller(Pollers.fixedDelay(0).receiveTimeout(-1))
+							.taskScheduler(dedicatedTaskScheduler()))
+					.channel("dedicatedResults")
+					.get();
+		}
 
-	@MessagingGateway
-	private interface ErrorRecovererFlowGateway {
 
-		String testIt(String payload);
+		@Bean
+		public TaskScheduler dedicatedTaskScheduler() {
+			return new ThreadPoolTaskScheduler();
+		}
 
 	}
 

@@ -16,6 +16,7 @@
 
 package org.springframework.integration.channel.reactive;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertSame;
@@ -87,7 +88,14 @@ public class ReactiveStreamsConsumerTests {
 
 		reactiveConsumer.stop();
 
-		testChannel.send(testMessage);
+		try {
+			testChannel.send(testMessage);
+		}
+		catch (Exception e) {
+			assertThat(e, instanceOf(MessageDeliveryException.class));
+			assertThat(e.getCause(), instanceOf(IllegalStateException.class));
+			assertThat(e.getMessage(), containsString("doesn't have subscribers to accept messages"));
+		}
 
 		reactiveConsumer.start();
 
@@ -245,7 +253,14 @@ public class ReactiveStreamsConsumerTests {
 
 		endpointFactoryBean.stop();
 
-		testChannel.send(testMessage);
+		try {
+			testChannel.send(testMessage);
+		}
+		catch (Exception e) {
+			assertThat(e, instanceOf(MessageDeliveryException.class));
+			assertThat(e.getCause(), instanceOf(IllegalStateException.class));
+			assertThat(e.getMessage(), containsString("doesn't have subscribers to accept messages"));
+		}
 
 		endpointFactoryBean.start();
 

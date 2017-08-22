@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -71,6 +72,7 @@ import org.springframework.util.StringUtils;
  * @author Marius Bogoevici
  * @author Artem Bilan
  * @author Gary Russell
+ * @author Rick Hogge
  */
 public class MessagingAnnotationPostProcessor implements BeanPostProcessor, BeanFactoryAware,
 		InitializingBean, SmartInitializingSingleton {
@@ -84,6 +86,8 @@ public class MessagingAnnotationPostProcessor implements BeanPostProcessor, Bean
 
 	private ConfigurableListableBeanFactory beanFactory;
 
+	private final Set<Class<?>> noAnnotationsCache =
+			Collections.newSetFromMap(new ConcurrentHashMap<Class<?>, Boolean>(256));
 
 	@Override
 	public void setBeanFactory(BeanFactory beanFactory) {
@@ -148,12 +152,18 @@ public class MessagingAnnotationPostProcessor implements BeanPostProcessor, Bean
 	@Override
 	public Object postProcessAfterInitialization(final Object bean, final String beanName) throws BeansException {
 		Assert.notNull(this.beanFactory, "BeanFactory must not be null");
-		final Class<?> beanClass = this.getBeanClass(bean);
+
+		Class<?> beanClass = AopUtils.getTargetClass(bean);
+
+		// the set will hold records of prior class scans and indicate if no messaging annotations were found
+		if (this.noAnnotationsCache.contains(beanClass)) {
+			return bean;
+		}
 
 		ReflectionUtils.doWithMethods(beanClass, method -> {
 			Map<Class<? extends Annotation>, List<Annotation>> annotationChains = new HashMap<>();
 			for (Class<? extends Annotation> annotationType :
-					MessagingAnnotationPostProcessor.this.postProcessors.keySet()) {
+					this.postProcessors.keySet()) {
 				if (AnnotatedElementUtils.isAnnotated(method, annotationType.getName())) {
 					List<Annotation> annotationChain = getAnnotationChain(method, annotationType);
 					if (annotationChain.size() > 0) {
@@ -166,6 +176,10 @@ public class MessagingAnnotationPostProcessor implements BeanPostProcessor, Bean
 				Class<? extends Annotation> annotationType = entry.getKey();
 				List<Annotation> annotations = entry.getValue();
 				processAnnotationTypeOnMethod(bean, beanName, method, annotationType, annotations);
+			}
+
+			if (annotationChains.size() == 0) {
+				this.noAnnotationsCache.add(beanClass);
 			}
 		}, ReflectionUtils.USER_DECLARED_METHODS);
 
@@ -258,11 +272,6 @@ public class MessagingAnnotationPostProcessor implements BeanPostProcessor, Bean
 			}
 		}
 		return false;
-	}
-
-	protected Class<?> getBeanClass(Object bean) {
-		Class<?> targetClass = AopUtils.getTargetClass(bean);
-		return (targetClass != null) ? targetClass : bean.getClass();
 	}
 
 	protected String generateBeanName(String originalBeanName, Method method,

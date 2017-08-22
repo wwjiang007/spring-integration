@@ -5,7 +5,8 @@
 === Introduction
 
 The HTTP support allows for the execution of HTTP requests and the processing of inbound HTTP requests.
-the HTTP support consists of the following gateway implementations: `HttpInboundEndpoint`, `HttpRequestExecutingMessageHandler` and `ReactiveHttpRequestExecutingMessageHandler`
+The HTTP support consists of the following gateway implementations: `HttpInboundEndpoint`, `HttpRequestExecutingMessageHandler`.
+Also see <<webflux>>.
 
 [[http-inbound]]
 === Http Inbound Components
@@ -191,43 +192,6 @@ The `expected-response-type` must be compatible with the (configured or default)
 Of course, this can be an abstract class, or even an interface (such as `java.io.Serializable` when using java serialization and `Content-Type: application/x-java-serialized-object`).
 =====
 
-==== ReactiveHttpRequestExecutingMessageHandler
-
-The `ReactiveHttpRequestExecutingMessageHandler` implementation is very similar to `HttpRequestExecutingMessageHandler` instead of delegating to a `WebClient` from Spring Framework WebFlux module.
-To configure it, write a bean like this:
-
-[source,xml]
-----
-<bean id="httpReactiveOutbound"
-    class="org.springframework.integration.http.outbound.ReactiveHttpRequestExecutingMessageHandler">
-     <constructor-arg value="http://localhost:8080/example" />
-     <property name="outputChannel" ref="responseChannel" />
-</bean>
-----
-
-You can configure a `WebClient` instance to use:
-
-[source,xml]
-----
-<beans:bean id="webClient" class="org.springframework.web.reactive.function.client.WebClient"
-				factory-method="create"/>
-
-<bean id="httpReactiveOutbound"
-    class="org.springframework.integration.http.outbound.ReactiveHttpRequestExecutingMessageHandler">
-     <constructor-arg value="http://localhost:8080/example" />
-     <constructor-arg re="webClient" />
-     <property name="outputChannel" ref="responseChannel" />
-</bean>
-----
-
-The `WebClient` `exchange()` operation returns a `Mono<ClientResponse>` which is mapped to the `AbstractIntegrationMessageBuilder` reactive support (using `Mono.map()`) as the output from the `ReactiveHttpRequestExecutingMessageHandler`.
-Together with the `ReactiveChannel` as an `outputChannel`, the `Mono<ClientResponse>` evaluation is deferred until a downstream subscription is made.
-Otherwise, it is treated as an `async` mode and the `Mono` response is adapted to an `SettableListenableFuture` for an asynchronous reply from the `ReactiveHttpRequestExecutingMessageHandler`.
-
-See http://docs.spring.io/spring/docs/5.0.0.M5/spring-framework-reference/html/web-reactive.html#web-reactive-client[WebFlux documentation] and https://projectreactor.io/[Project Reactor] for more information.
-
-For other settings like cookie, uri variables, etc, please see `HttpRequestExecutingMessageHandler` above.
-
 [[http-namespace]]
 === HTTP Namespace Support
 
@@ -274,6 +238,7 @@ To process requests that do expect a response, use an _inbound-gateway_:
     reply-channel="responses"/>
 ----
 
+[[http-request-mapping]]
 ==== Request Mapping Support
 
 NOTE: _Spring Integration 3.0_ is improving the REST support by introducing the http://static.springsource.org/spring-integration/api/org/springframework/integration/http/inbound/IntegrationRequestMappingHandlerMapping.html[IntegrationRequestMappingHandlerMapping].
@@ -517,7 +482,7 @@ Alternatively, you may wish to consider using JSON instead which is enabled by s
 =====
 
 Beginning with Spring Integration 2.2 you can also determine the HTTP Method dynamically using SpEL and the _http-method-expression_ attribute.
-Note that this attribute is obviously murually exclusive with _http-method_ You can also use `expected-response-type-expression` attribute instead of `expected-response-type` and provide any valid SpEL expression that determines the type of the response.
+Note that this attribute is obviously mutually exclusive with _http-method_ You can also use `expected-response-type-expression` attribute instead of `expected-response-type` and provide any valid SpEL expression that determines the type of the response.
 [source,xml]
 ----
 <int-http:outbound-gateway id="example"
@@ -548,32 +513,6 @@ The configuration looks very similar to the gateway:
     request-factory="someRequestFactory"
     order="3"
     auto-startup="false"/>
-----
-
-If you want to execute the http request in a reactive, non-blocking way, you can use the `outbound-reactive-gateway` or `outbound-reactive-channel-adapter`.
-
-[source,xml]
-----
-<int-http:outbound-reactive-gateway id="reactiveExample1"
-    request-channel="requests"
-    url="http://localhost/test"
-    http-method-expression="headers.httpMethod"
-    extract-request-payload="false"
-    expected-response-type-expression="payload"
-    charset="UTF-8"
-    reply-timeout="1234"
-    reply-channel="replies"/>
-
-<int-http:outbound-reactive-channel-adapter id="reactiveExample2"
-    url="http://localhost/example"
-    http-method="GET"
-    channel="requests"
-    charset="UTF-8"
-    extract-payload="false"
-    expected-response-type="java.lang.String"
-    order="3"
-    auto-startup="false"/>
-
 ----
 
 [NOTE]

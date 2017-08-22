@@ -474,7 +474,7 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 	}
 
 	@Override
-	public void stop() {
+	public synchronized void stop() {
 		if (this.flushTask != null) {
 			this.flushTask.cancel(true);
 			this.flushTask = null;
@@ -620,13 +620,12 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 		if (append) {
 			final File fileToWriteTo = this.determineFileToWrite(resultFile, tempFile);
 
-			final FileState state = getFileState(fileToWriteTo, false);
-
 			WhileLockedProcessor whileLockedProcessor = new WhileLockedProcessor(this.lockRegistry,
 					fileToWriteTo.getAbsolutePath()) {
 
 				@Override
 				protected void whileLocked() throws IOException {
+					FileState state = getFileState(fileToWriteTo, false);
 					BufferedOutputStream bos = null;
 					try {
 						bos = state != null ? state.stream : createOutputStream(fileToWriteTo, true);
@@ -704,8 +703,6 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 			throws IOException {
 		final File fileToWriteTo = this.determineFileToWrite(resultFile, tempFile);
 
-		final FileState state = getFileState(fileToWriteTo, false);
-
 		final boolean append = FileExistsMode.APPEND.equals(this.fileExistsMode);
 
 		WhileLockedProcessor whileLockedProcessor = new WhileLockedProcessor(this.lockRegistry,
@@ -713,6 +710,7 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 
 			@Override
 			protected void whileLocked() throws IOException {
+				FileState state = getFileState(fileToWriteTo, false);
 				BufferedOutputStream bos = null;
 				try {
 					bos = state != null ? state.stream : createOutputStream(fileToWriteTo, append);
@@ -748,8 +746,6 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 			throws IOException {
 		final File fileToWriteTo = this.determineFileToWrite(resultFile, tempFile);
 
-		final FileState state = getFileState(fileToWriteTo, true);
-
 		final boolean append = FileExistsMode.APPEND.equals(this.fileExistsMode);
 
 		WhileLockedProcessor whileLockedProcessor = new WhileLockedProcessor(this.lockRegistry,
@@ -757,6 +753,7 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 
 			@Override
 			protected void whileLocked() throws IOException {
+				FileState state = getFileState(fileToWriteTo, true);
 				BufferedWriter writer = null;
 				try {
 					writer = state != null ? state.writer : createWriter(fileToWriteTo, append);
@@ -1008,7 +1005,7 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 			this.lock = lock;
 		}
 
-		private void close() {
+		private boolean close() {
 			try {
 				this.lock.lockInterruptibly();
 				try {
@@ -1022,9 +1019,11 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 				catch (IOException e) {
 					// ignore
 				}
+				return true;
 			}
 			catch (InterruptedException e1) {
 				Thread.currentThread().interrupt();
+				return false;
 			}
 			finally {
 				this.lock.unlock();
@@ -1050,10 +1049,14 @@ public class FileWritingMessageHandler extends AbstractReplyProducingMessageHand
 					FileState state = entry.getValue();
 					if (state.lastWrite < expired ||
 							(!FileWritingMessageHandler.this.flushWhenIdle && state.firstWrite < expired)) {
-						iterator.remove();
-						state.close();
-						if (FileWritingMessageHandler.this.logger.isDebugEnabled()) {
-							FileWritingMessageHandler.this.logger.debug("Flushed: " + entry.getKey());
+						if (state.close()) {
+							if (FileWritingMessageHandler.this.logger.isDebugEnabled()) {
+								FileWritingMessageHandler.this.logger.debug("Flushed: " + entry.getKey());
+							}
+							iterator.remove();
+						}
+						else {
+							break; // interrupted
 						}
 					}
 				}

@@ -79,42 +79,42 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 	public enum Command {
 
 		/**
-		 * List remote files.
+		 * (ls) List remote files.
 		 */
 		LS("ls"),
 
 		/**
-		 * List remote file names.
+		 * (nlst) List remote file names.
 		 */
 		NLST("nlst"),
 
 		/**
-		 * Retrieve a remote file.
+		 * (get) Retrieve a remote file.
 		 */
 		GET("get"),
 
 		/**
-		 * Remove a remote file (path - including wildcards).
+		 * (rm) Remove a remote file (path - including wildcards).
 		 */
 		RM("rm"),
 
 		/**
-		 * Retrieve multiple files matching a wildcard path.
+		 * (mget) Retrieve multiple files matching a wildcard path.
 		 */
 		MGET("mget"),
 
 		/**
-		 * Move (rename) a remote file.
+		 * (mv) Move (rename) a remote file.
 		 */
 		MV("mv"),
 
 		/**
-		 * Put a local file to the remote system.
+		 * (put) Put a local file to the remote system.
 		 */
 		PUT("put"),
 
 		/**
-		 * Put multiple local files to the remote system.
+		 * (mput) Put multiple local files to the remote system.
 		 */
 		MPUT("mput");
 
@@ -146,49 +146,55 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 	public enum Option {
 
 		/**
-		 * Don't return full file information; just the name (ls).
+		 * (-1) Don't return full file information; just the name (ls).
 		 */
 		NAME_ONLY("-1"),
 
 		/**
-		 * Include files beginning with {@code .}, including directories {@code .} and {@code ..} in the results (ls).
+		 * (-a) Include files beginning with {@code .}, including directories {@code .}
+		 * and {@code ..} in the results (ls).
 		 */
 		ALL("-a"),
 
 		/**
-		 * Do not sort the results (ls with NAME_ONLY).
+		 * (-f) Do not sort the results (ls with NAME_ONLY).
 		 */
 		NOSORT("-f"),
 
 		/**
-		 * Include directories in the results (ls).
+		 * (-dirs) Include directories in the results (ls).
 		 */
 		SUBDIRS("-dirs"),
 
 		/**
-		 * Include links in the results (ls).
+		 * (-links) Include links in the results (ls).
 		 */
 		LINKS("-links"),
 
 		/**
-		 * Preserve the server timestamp (get, mget).
+		 * (-P) Preserve the server timestamp (get, mget).
 		 */
 		PRESERVE_TIMESTAMP("-P"),
 
 		/**
-		 * Throw an exception if no files returned (mget).
+		 * (-x) Throw an exception if no files returned (mget).
 		 */
 		EXCEPTION_WHEN_EMPTY("-x"),
 
 		/**
-		 * Recursive (ls, mget)
+		 * (-R) Recursive (ls, mget)
 		 */
 		RECURSIVE("-R"),
 
 		/**
-		 * Streaming 'get' (returns InputStream); user must call {@link Session#close()}.
+		 * (-stream) Streaming 'get' (returns InputStream); user must call {@link Session#close()}.
 		 */
-		STREAM("-stream");
+		STREAM("-stream"),
+
+		/**
+		 * (-D) Delete the remote file after successful transfer (get, mget).
+		 */
+		DELETE("-D");
 
 		private String option;
 
@@ -324,8 +330,9 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 	}
 
 	/**
-	 * Specify the array of options for various gateway commands.
+	 * Specify the options for various gateway commands as a space-delimited string.
 	 * @param options the options to set
+	 * @see Option
 	 */
 	public void setOptions(String options) {
 		Assert.hasText(options, "'options' must not be empty.");
@@ -341,6 +348,7 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 	 * Specify the array of options for various gateway commands.
 	 * @param options the {@link Option} array to use.
 	 * @since 5.0
+	 * @see Option
 	 */
 	public void setOption(Option... options) {
 		Assert.notNull(options, "'options' must not be null");
@@ -1039,12 +1047,27 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 			if (!appending && !tempFile.renameTo(localFile)) {
 				throw new MessagingException("Failed to rename local file");
 			}
-			if (this.options.contains(Option.PRESERVE_TIMESTAMP)) {
+			if (this.options.contains(Option.PRESERVE_TIMESTAMP)
+					|| FileExistsMode.REPLACE_IF_MODIFIED.equals(fileExistsMode)) {
 				localFile.setLastModified(getModified(fileInfo));
+			}
+			if (this.options.contains(Option.DELETE)) {
+				boolean result = session.remove(remoteFilePath);
+				if (!result) {
+					logger.error("Failed to delete: " + remoteFilePath);
+				}
+				else if (logger.isDebugEnabled()) {
+					logger.debug(remoteFilePath + " deleted");
+				}
 			}
 		}
 		else if (FileExistsMode.REPLACE_IF_MODIFIED.equals(fileExistsMode)) {
-			logger.debug("Local file '" + localFile + "' has the same modified timestamp, ignored");
+			if (logger.isDebugEnabled()) {
+				logger.debug("Local file '" + localFile + "' has the same modified timestamp, ignored");
+			}
+			if (this.command.equals(Command.MGET)) {
+				localFile = null;
+			}
 		}
 		else if (!FileExistsMode.IGNORE.equals(fileExistsMode)) {
 			throw new MessageHandlingException(message, "Local file " + localFile + " already exists");
@@ -1052,6 +1075,9 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 		else {
 			if (logger.isDebugEnabled()) {
 				logger.debug("Existing file skipped: " + localFile);
+			}
+			if (this.command.equals(Command.MGET)) {
+				localFile = null;
 			}
 		}
 		return localFile;
@@ -1098,9 +1124,10 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 				 */
 				String fileName = this.getRemoteFilename(fullFileName);
 				String actualRemoteDirectory = this.getRemoteDirectory(fullFileName, fileName);
-				File file = get(message, session, actualRemoteDirectory,
-						fullFileName, fileName, lsEntry.getFileInfo());
-				files.add(file);
+				File file = get(message, session, actualRemoteDirectory, fullFileName, fileName, lsEntry.getFileInfo());
+				if (file != null) {
+					files.add(file);
+				}
 			}
 		}
 		catch (Exception e) {
@@ -1141,9 +1168,10 @@ public abstract class AbstractRemoteFileOutboundGateway<F> extends AbstractReply
 				 */
 				String fileName = this.getRemoteFilename(fullFileName);
 				String actualRemoteDirectory = this.getRemoteDirectory(fullFileName, fileName);
-				File file = get(message, session, actualRemoteDirectory,
-						fullFileName, fileName, lsEntry.getFileInfo());
-				files.add(file);
+				File file = get(message, session, actualRemoteDirectory, fullFileName, fileName, lsEntry.getFileInfo());
+				if (file != null) {
+					files.add(file);
+				}
 			}
 		}
 		catch (Exception e) {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,9 +28,10 @@ import static org.mockito.Mockito.spy;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -213,7 +214,7 @@ public class GatewayProxyFactoryBeanTests {
 		final TestService service = (TestService) context.getBean("proxy");
 		final String[] results = new String[numRequests];
 		final CountDownLatch latch = new CountDownLatch(numRequests);
-		Executor executor = Executors.newFixedThreadPool(numRequests);
+		ExecutorService executor = Executors.newFixedThreadPool(numRequests);
 		for (int i = 0; i < numRequests; i++) {
 			final int count = i;
 			executor.execute(() -> {
@@ -236,6 +237,7 @@ public class GatewayProxyFactoryBeanTests {
 		assertEquals(numRequests, interceptor.getSentCount());
 		assertEquals(numRequests, interceptor.getReceivedCount());
 		context.close();
+		executor.shutdownNow();
 	}
 
 	@Test
@@ -462,6 +464,13 @@ public class GatewayProxyFactoryBeanTests {
 		new ClassPathXmlApplicationContext("gatewayAutowiring.xml", GatewayProxyFactoryBeanTests.class).close();
 	}
 
+	@Test
+	public void testOverriddenMethod() {
+		GatewayProxyFactoryBean gpfb = new GatewayProxyFactoryBean(InheritChild.class);
+		gpfb.afterPropertiesSet();
+		Map<Method, MessagingGatewaySupport> gateways = gpfb.getGateways();
+		assertThat(gateways.size(), equalTo(2));
+	}
 
 	public static void throwTestException() throws TestException {
 		throw new TestException();
@@ -491,6 +500,20 @@ public class GatewayProxyFactoryBeanTests {
 		String throwCheckedException(String s) throws TestException;
 	}
 
+	interface InheritSuper {
+
+		String overridden(String in);
+
+		String NotOverridden(String in);
+
+	}
+
+	interface InheritChild extends InheritSuper {
+
+		@Override
+		String overridden(String in);
+
+	}
 
 	@SuppressWarnings("serial")
 	static class TestException extends Exception {

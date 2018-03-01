@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
 import java.util.Set;
 
 import org.apache.commons.logging.Log;
@@ -33,39 +34,46 @@ import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.core.OrderComparator;
 import org.springframework.integration.channel.ChannelInterceptorAware;
 import org.springframework.integration.channel.interceptor.GlobalChannelInterceptorWrapper;
 import org.springframework.integration.channel.interceptor.VetoCapableInterceptor;
+import org.springframework.integration.context.IntegrationContextUtils;
+import org.springframework.integration.context.IntegrationProperties;
+import org.springframework.integration.util.PatternMatchUtils;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
-import org.springframework.util.PatternMatchUtils;
 import org.springframework.util.StringUtils;
 
 /**
- * Will apply global interceptors to channels (&lt;channel-interceptor&gt;).
+ * This class applies global interceptors ({@code <channel-interceptor>} or {@code @GlobalChannelInterceptor})
+ * to message channels beans.
  *
  * @author Oleg Zhurakousky
  * @author Mark Fisher
  * @author Artem Bilan
  * @author Gary Russell
+ * @author Meherzad Lahewala
+ *
  * @since 2.0
  */
-final class GlobalChannelInterceptorProcessor implements BeanFactoryAware, SmartInitializingSingleton {
+public final class GlobalChannelInterceptorProcessor
+		implements BeanFactoryAware, SmartInitializingSingleton, BeanPostProcessor {
 
 	private static final Log logger = LogFactory.getLog(GlobalChannelInterceptorProcessor.class);
 
 
 	private final OrderComparator comparator = new OrderComparator();
 
-	private final Set<GlobalChannelInterceptorWrapper> positiveOrderInterceptors =
-			new LinkedHashSet<GlobalChannelInterceptorWrapper>();
+	private final Set<GlobalChannelInterceptorWrapper> positiveOrderInterceptors = new LinkedHashSet<>();
 
-	private final Set<GlobalChannelInterceptorWrapper> negativeOrderInterceptors =
-			new LinkedHashSet<GlobalChannelInterceptorWrapper>();
+	private final Set<GlobalChannelInterceptorWrapper> negativeOrderInterceptors = new LinkedHashSet<>();
 
 	private ListableBeanFactory beanFactory;
+
+	private volatile boolean singletonsInstantiated;
 
 	@Override
 	public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
@@ -89,30 +97,51 @@ final class GlobalChannelInterceptorProcessor implements BeanFactoryAware, Smart
 					this.negativeOrderInterceptors.add(channelInterceptor);
 				}
 			}
+
 			Map<String, ChannelInterceptorAware> channels =
 					this.beanFactory.getBeansOfType(ChannelInterceptorAware.class);
 			for (Entry<String, ChannelInterceptorAware> entry : channels.entrySet()) {
 				addMatchingInterceptors(entry.getValue(), entry.getKey());
 			}
 		}
+
+		// TODO Remove this logic in 5.1
+		Properties integrationProperties = IntegrationContextUtils.getIntegrationProperties(this.beanFactory);
+
+		this.singletonsInstantiated =
+				Boolean.parseBoolean(integrationProperties.getProperty(
+						IntegrationProperties.POST_PROCESS_DYNAMIC_BEANS));
+	}
+
+	@Override
+	public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+		if (this.singletonsInstantiated && bean instanceof ChannelInterceptorAware) {
+			addMatchingInterceptors((ChannelInterceptorAware) bean, beanName);
+		}
+		return bean;
 	}
 
 	/**
-	 * Adds any interceptor whose pattern matches against the channel's name.
+	 * Add any interceptor whose pattern matches against the channel's name.
+	 * @param channel the message channel to add interceptors.
+	 * @param beanName the message channel bean name to match the pattern.
 	 */
-	private void addMatchingInterceptors(ChannelInterceptorAware channel, String beanName) {
+	public void addMatchingInterceptors(ChannelInterceptorAware channel, String beanName) {
 		if (logger.isDebugEnabled()) {
 			logger.debug("Applying global interceptors on channel '" + beanName + "'");
 		}
-		List<GlobalChannelInterceptorWrapper> tempInterceptors = new ArrayList<GlobalChannelInterceptorWrapper>();
+
+		List<GlobalChannelInterceptorWrapper> tempInterceptors = new ArrayList<>();
 		for (GlobalChannelInterceptorWrapper globalChannelInterceptorWrapper : this.positiveOrderInterceptors) {
 			String[] patterns = globalChannelInterceptorWrapper.getPatterns();
 			patterns = StringUtils.trimArrayElements(patterns);
-			if (PatternMatchUtils.simpleMatch(patterns, beanName)) {
+			if (beanName != null && Boolean.TRUE.equals(PatternMatchUtils.smartMatch(beanName, patterns))) {
 				tempInterceptors.add(globalChannelInterceptorWrapper);
 			}
 		}
+
 		Collections.sort(tempInterceptors, this.comparator);
+
 		for (GlobalChannelInterceptorWrapper next : tempInterceptors) {
 			ChannelInterceptor channelInterceptor = next.getChannelInterceptor();
 			if (!(channelInterceptor instanceof VetoCapableInterceptor)
@@ -122,14 +151,17 @@ final class GlobalChannelInterceptorProcessor implements BeanFactoryAware, Smart
 		}
 
 		tempInterceptors.clear();
+
 		for (GlobalChannelInterceptorWrapper globalChannelInterceptorWrapper : this.negativeOrderInterceptors) {
 			String[] patterns = globalChannelInterceptorWrapper.getPatterns();
 			patterns = StringUtils.trimArrayElements(patterns);
-			if (PatternMatchUtils.simpleMatch(patterns, beanName)) {
+			if (beanName != null && Boolean.TRUE.equals(PatternMatchUtils.smartMatch(beanName, patterns))) {
 				tempInterceptors.add(globalChannelInterceptorWrapper);
 			}
 		}
+
 		Collections.sort(tempInterceptors, this.comparator);
+
 		if (!tempInterceptors.isEmpty()) {
 			for (int i = tempInterceptors.size() - 1; i >= 0; i--) {
 				ChannelInterceptor channelInterceptor = tempInterceptors.get(i).getChannelInterceptor();

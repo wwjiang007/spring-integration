@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,8 +26,9 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.Serializable;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -61,6 +62,7 @@ import org.springframework.integration.context.IntegrationContextUtils;
 import org.springframework.integration.dsl.IntegrationFlow;
 import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.dsl.Pollers;
+import org.springframework.integration.dsl.Transformers;
 import org.springframework.integration.dsl.channel.MessageChannels;
 import org.springframework.integration.handler.AbstractReplyProducingMessageHandler;
 import org.springframework.integration.handler.GenericHandler;
@@ -72,7 +74,6 @@ import org.springframework.integration.store.MessageStore;
 import org.springframework.integration.store.SimpleMessageStore;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.integration.support.MutableMessageBuilder;
-import org.springframework.integration.transformer.PayloadDeserializingTransformer;
 import org.springframework.integration.transformer.PayloadSerializingTransformer;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -85,6 +86,7 @@ import org.springframework.messaging.SubscribableChannel;
 import org.springframework.messaging.support.ErrorMessage;
 import org.springframework.messaging.support.GenericMessage;
 import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Service;
@@ -95,6 +97,7 @@ import org.springframework.test.context.junit4.SpringRunner;
  * @author Artem Bilan
  * @author Tim Ysewyn
  * @author Gary Russell
+ * @author Oleg Zhurakousky
  *
  * @since 5.0
  */
@@ -123,6 +126,14 @@ public class IntegrationFlowTests {
 	@Autowired
 	@Qualifier("successChannel")
 	private PollableChannel successChannel;
+
+	@Autowired
+	@Qualifier("suppliedChannel")
+	private PollableChannel suppliedChannel;
+
+	@Autowired
+	@Qualifier("suppliedChannel2")
+	private PollableChannel suppliedChannel2;
 
 	@Autowired
 	@Qualifier("bridgeFlowInput")
@@ -166,6 +177,16 @@ public class IntegrationFlowTests {
 	@Autowired
 	@Qualifier("gatewayError")
 	private PollableChannel gatewayError;
+
+	@Test
+	public void testWithSupplierMessageSourceImpliedPoller() {
+		assertEquals("FOO", this.suppliedChannel.receive(1000).getPayload());
+	}
+
+	@Test
+	public void testWithSupplierMessageSourceProvidedPoller() {
+		assertEquals("FOO", this.suppliedChannel2.receive(2000).getPayload());
+	}
 
 	@Test
 	public void testDirectFlow() {
@@ -424,6 +445,7 @@ public class IntegrationFlowTests {
 	}
 
 	@Autowired
+	@Qualifier("errorRecovererFunction")
 	private Function<String, String> errorRecovererFlowGateway;
 
 	@Test
@@ -457,6 +479,53 @@ public class IntegrationFlowTests {
 	public interface ControlBusGateway {
 
 		void send(String command);
+	}
+
+	@Configuration
+	@EnableIntegration
+	public static class SupplierContextConfiguration1 {
+		@Bean
+		public IntegrationFlow supplierFlow() {
+			return IntegrationFlows.from(() -> "foo")
+					.<String, String>transform(p -> p.toUpperCase())
+					.channel("suppliedChannel")
+					.get();
+		}
+
+		@Bean(name = PollerMetadata.DEFAULT_POLLER)
+		public PollerMetadata poller() {
+			return Pollers.fixedRate(100).get();
+		}
+
+		@Bean(name = IntegrationContextUtils.TASK_SCHEDULER_BEAN_NAME)
+		public TaskScheduler taskScheduler() {
+			ThreadPoolTaskScheduler threadPoolTaskScheduler = new ThreadPoolTaskScheduler();
+			threadPoolTaskScheduler.setPoolSize(100);
+			return threadPoolTaskScheduler;
+		}
+
+
+		@Bean
+		public MessageChannel suppliedChannel() {
+			return MessageChannels.queue(10).get();
+		}
+	}
+
+	@Configuration
+	@EnableIntegration
+	public static class SupplierContextConfiguration2 {
+		@Bean
+		public IntegrationFlow supplierFlow2() {
+			return IntegrationFlows.from(() -> "foo", c -> c.poller(Pollers.fixedDelay(100).maxMessagesPerPoll(1)))
+					.<String, String>transform(p -> p.toUpperCase())
+					.channel("suppliedChannel2")
+					.get();
+		}
+
+		@Bean
+		public MessageChannel suppliedChannel2() {
+			return MessageChannels.queue(10).get();
+		}
 	}
 
 	@Configuration
@@ -526,10 +595,12 @@ public class IntegrationFlowTests {
 					.channel("foo")
 					.fixedSubscriberChannel()
 					.<String, Integer>transform(Integer::parseInt)
+					.<Integer, Foo>transform(i -> new Foo(i))
 					.transform(new PayloadSerializingTransformer(),
 							c -> c.autoStartup(false).id("payloadSerializingTransformer"))
 					.channel(MessageChannels.queue(new SimpleMessageStore(), "fooQueue"))
-					.transform(new PayloadDeserializingTransformer())
+					.transform(Transformers.deserializer(Foo.class.getName()))
+					.<Foo, Integer>transform(f -> f.value)
 					.filter("true", e -> e.id("expressionFilter"))
 					.channel(publishSubscribeChannel())
 					.transform((Integer p) -> p * 2, c -> c.advice(this.expressionAdvice()))
@@ -544,7 +615,7 @@ public class IntegrationFlowTests {
 		@Bean
 		public IntegrationFlow subscribersFlow() {
 			return flow -> flow
-					.publishSubscribeChannel(Executors.newCachedThreadPool(), s -> s
+					.publishSubscribeChannel(executor(), s -> s
 							.subscribe(f -> f
 									.<Integer>handle((p, h) -> p / 2)
 									.channel(MessageChannels.queue("subscriber1Results")))
@@ -553,6 +624,13 @@ public class IntegrationFlowTests {
 									.channel(MessageChannels.queue("subscriber2Results"))))
 					.<Integer>handle((p, h) -> p * 3)
 					.channel(MessageChannels.queue("subscriber3Results"));
+		}
+
+		@Bean
+		public Executor executor() {
+			ThreadPoolTaskExecutor tpte = new ThreadPoolTaskExecutor();
+			tpte.setCorePoolSize(50);
+			return tpte;
 		}
 
 		@Bean
@@ -720,7 +798,7 @@ public class IntegrationFlowTests {
 
 		@Bean
 		public IntegrationFlow errorRecovererFlow() {
-			return IntegrationFlows.from(Function.class)
+			return IntegrationFlows.from(Function.class, "errorRecovererFunction")
 					.handle((GenericHandler<?>) (p, h) -> {
 						throw new RuntimeException("intentional");
 					}, e -> e.advice(retryAdvice()))
@@ -793,6 +871,17 @@ public class IntegrationFlowTests {
 			return IntegrationFlows.from(MessageChannels.direct())
 					.fixedSubscriberChannel()
 					.get();
+		}
+
+	}
+
+	@SuppressWarnings("serial")
+	public static class Foo implements Serializable {
+
+		private final Integer value;
+
+		public Foo(Integer value) {
+			this.value = value;
 		}
 
 	}

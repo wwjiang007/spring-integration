@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2017 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,18 +20,22 @@ import java.lang.reflect.Type;
 import java.util.Map;
 
 import org.springframework.integration.support.json.JsonInboundMessageMapper.JsonMessageParser;
+import org.springframework.lang.Nullable;
 import org.springframework.messaging.Message;
 import org.springframework.util.Assert;
 
 /**
  * {@link org.springframework.integration.mapping.InboundMessageMapper} implementation that maps incoming JSON messages
  * to a {@link Message} with the specified payload type.
+ * <p>
+ * Consider using the {@link EmbeddedJsonHeadersMessageMapper} instead.
  *
  * @author Jeremy Grelle
  * @author Oleg Zhurakousky
  * @author Mark Fisher
  * @author Artem Bilan
  * @author Gary Russell
+ *
  * @since 2.0
  */
 public class JsonInboundMessageMapper extends AbstractJsonInboundMessageMapper<JsonMessageParser<?>> {
@@ -60,8 +64,9 @@ public class JsonInboundMessageMapper extends AbstractJsonInboundMessageMapper<J
 		return headerTypes;
 	}
 
-	public Message<?> toMessage(String jsonMessage) throws Exception {
-		return this.messageParser.doInParser(this, jsonMessage);
+	@Override
+	public Message<?> toMessage(String jsonMessage, @Nullable Map<String, Object> headers) throws Exception {
+		return this.messageParser.doInParser(this, jsonMessage, headers);
 	}
 
 	@Override
@@ -78,7 +83,8 @@ public class JsonInboundMessageMapper extends AbstractJsonInboundMessageMapper<J
 
 	public interface JsonMessageParser<P> {
 
-		Message<?> doInParser(JsonInboundMessageMapper messageMapper, String jsonMessage) throws Exception;
+		Message<?> doInParser(JsonInboundMessageMapper messageMapper, String jsonMessage,
+				@Nullable Map<String, Object> headers) throws Exception;
 
 	}
 

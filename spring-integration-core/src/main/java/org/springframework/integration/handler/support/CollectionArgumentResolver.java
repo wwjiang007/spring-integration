@@ -42,6 +42,7 @@ import org.springframework.util.Assert;
  * to convert the value to the target type.
  *
  * @author Artem Bilan
+ * @author Gary Russell
  *
  * @since 5.0
  */
@@ -69,7 +70,9 @@ public class CollectionArgumentResolver extends AbstractExpressionEvaluator
 
 		if (this.canProcessMessageList) {
 			Assert.state(value instanceof Collection,
-					"This Argument Resolver only supports messages with a payload of Collection<Message<?>>");
+					"This Argument Resolver only supports messages with a payload of Collection<Message<?>>, "
+					+ "payload is: " + value.getClass());
+
 			Collection<Message<?>> messages = (Collection<Message<?>>) value;
 
 			parameter.increaseNestingLevel();

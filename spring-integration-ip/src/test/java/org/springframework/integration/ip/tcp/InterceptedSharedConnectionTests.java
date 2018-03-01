@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 
 package org.springframework.integration.ip.tcp;
 
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.assertThat;
 
 import org.apache.log4j.Level;
 import org.apache.log4j.LogManager;
@@ -28,12 +30,19 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.support.AbstractApplicationContext;
 import org.springframework.integration.channel.QueueChannel;
+import org.springframework.integration.config.ConsumerEndpointFactoryBean;
+import org.springframework.integration.ip.tcp.connection.AbstractClientConnectionFactory;
+import org.springframework.integration.ip.tcp.connection.AbstractServerConnectionFactory;
+import org.springframework.integration.ip.tcp.connection.HelloWorldInterceptor;
+import org.springframework.integration.ip.tcp.connection.TcpConnectionOpenEvent;
+import org.springframework.integration.ip.util.TestingUtilities;
 import org.springframework.integration.support.MessageBuilder;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
@@ -43,14 +52,20 @@ import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
  */
 @ContextConfiguration
 @RunWith(SpringJUnit4ClassRunner.class)
+@DirtiesContext
 public class InterceptedSharedConnectionTests {
 
 	@Autowired
 	AbstractApplicationContext ctx;
 
 	@Autowired
-	@Qualifier("inboundServer")
-	TcpReceivingChannelAdapter listener;
+	AbstractServerConnectionFactory server;
+
+	@Autowired
+	AbstractClientConnectionFactory client;
+
+	@Autowired
+	Listener listener;
 
 	private static Level existingLogLevel;
 
@@ -78,13 +93,9 @@ public class InterceptedSharedConnectionTests {
 	 */
 	@Test
 	public void test1() throws Exception {
-		int n = 0;
-		while (!listener.isListening()) {
-			Thread.sleep(100);
-			if (n++ > 100) {
-				fail("Failed to listen");
-			}
-		}
+		TestingUtilities.waitListening(this.server, null);
+		this.client.setPort(this.server.getPort());
+		this.ctx.getBeansOfType(ConsumerEndpointFactoryBean.class).values().forEach(c -> c.start());
 		for (int i = 0; i < 5; i++) {
 			MessageChannel input = ctx.getBean("input", MessageChannel.class);
 			input.send(MessageBuilder.withPayload("Test").build());
@@ -93,6 +104,21 @@ public class InterceptedSharedConnectionTests {
 			assertNotNull(message);
 			assertEquals("Test", message.getPayload());
 		}
+		assertThat(this.listener.openEvent, notNullValue());
+		assertThat(this.listener.openEvent.getConnectionFactoryName(), equalTo("client"));
+	}
+
+	public static class Listener implements ApplicationListener<TcpConnectionOpenEvent> {
+
+		private volatile TcpConnectionOpenEvent openEvent;
+
+		@Override
+		public void onApplicationEvent(TcpConnectionOpenEvent event) {
+			if (event.getSource() instanceof HelloWorldInterceptor) {
+				this.openEvent = event;
+			}
+		}
+
 	}
 
 }

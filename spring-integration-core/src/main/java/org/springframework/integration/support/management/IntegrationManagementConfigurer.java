@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2016 the original author or authors.
+ * Copyright 2015-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,12 +26,21 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.BeanNameAware;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
+import org.springframework.integration.core.MessageSource;
+import org.springframework.integration.support.management.IntegrationManagement.ManagementOverrides;
+import org.springframework.integration.util.PatternMatchUtils;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.MessageHandler;
 import org.springframework.util.Assert;
-import org.springframework.util.PatternMatchUtils;
 import org.springframework.util.StringUtils;
+
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 
 
 /**
@@ -40,11 +49,13 @@ import org.springframework.util.StringUtils;
  *
  * @author Gary Russell
  * @author Artem Bilan
+ * @author Meherzad Lahewala
+ *
  * @since 4.2
  *
  */
 public class IntegrationManagementConfigurer implements SmartInitializingSingleton, ApplicationContextAware,
-		BeanNameAware {
+		BeanNameAware, BeanPostProcessor {
 
 	private static final Log logger = LogFactory.getLog(IntegrationManagementConfigurer.class);
 
@@ -55,6 +66,8 @@ public class IntegrationManagementConfigurer implements SmartInitializingSinglet
 	private final Map<String, MessageHandlerMetrics> handlersByName = new HashMap<String, MessageHandlerMetrics>();
 
 	private final Map<String, MessageSourceMetrics> sourcesByName = new HashMap<String, MessageSourceMetrics>();
+
+	private final Map<String, MessageSourceMetricsConfigurer> sourceConfigurers = new HashMap<>();
 
 	private ApplicationContext applicationContext;
 
@@ -70,9 +83,13 @@ public class IntegrationManagementConfigurer implements SmartInitializingSinglet
 
 	private String metricsFactoryBeanName;
 
-	private String[] enabledCountsPatterns = {  };
+	private String[] enabledCountsPatterns = { };
 
-	private String[] enabledStatsPatterns = {  };
+	private String[] enabledStatsPatterns = { };
+
+	private volatile boolean singletonsInstantiated;
+
+	private MeterRegistry meterRegistry;
 
 	@Override
 	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
@@ -197,49 +214,112 @@ public class IntegrationManagementConfigurer implements SmartInitializingSinglet
 		Assert.state(this.applicationContext != null, "'applicationContext' must not be null");
 		Assert.state(MANAGEMENT_CONFIGURER_NAME.equals(this.beanName), getClass().getSimpleName()
 				+ " bean name must be " + MANAGEMENT_CONFIGURER_NAME);
+		try {
+			this.meterRegistry = this.applicationContext.getBean(MeterRegistry.class);
+		}
+		catch (NoSuchBeanDefinitionException e) {
+			// no op
+		}
+		if (this.meterRegistry != null) {
+			injectRegistry(this.meterRegistry);
+			registerComponentGauges(this.meterRegistry);
+		}
 		if (this.metricsFactory == null && StringUtils.hasText(this.metricsFactoryBeanName)) {
 			this.metricsFactory = this.applicationContext.getBean(this.metricsFactoryBeanName, MetricsFactory.class);
 		}
 		if (this.metricsFactory == null) {
+			Map<String, MetricsFactory> factories = this.applicationContext.getBeansOfType(MetricsFactory.class);
+			if (factories.size() == 1) {
+				this.metricsFactory = factories.values().iterator().next();
+			}
+		}
+		if (this.metricsFactory == null) {
 			this.metricsFactory = new DefaultMetricsFactory();
 		}
+		this.sourceConfigurers.putAll(this.applicationContext.getBeansOfType(MessageSourceMetricsConfigurer.class));
 		Map<String, IntegrationManagement> managed = this.applicationContext.getBeansOfType(IntegrationManagement.class);
 		for (Entry<String, IntegrationManagement> entry : managed.entrySet()) {
 			IntegrationManagement bean = entry.getValue();
-			bean.setLoggingEnabled(this.defaultLoggingEnabled);
-			if (bean instanceof MessageChannelMetrics) {
-				configureChannelMetrics(entry.getKey(), (MessageChannelMetrics) bean);
+			if (!bean.getOverrides().loggingConfigured) {
+				bean.setLoggingEnabled(this.defaultLoggingEnabled);
 			}
-			else if (bean instanceof MessageHandlerMetrics) {
-				configureHandlerMetrics(entry.getKey(), (MessageHandlerMetrics) bean);
-			}
-			else if (bean instanceof MessageSourceMetrics) {
-				configureSourceMetrics(entry.getKey(), (MessageSourceMetrics) bean);
-			}
+			String name = entry.getKey();
+			doConfigureMetrics(bean, name);
 		}
+		this.singletonsInstantiated = true;
+	}
+
+	/**
+	 * @param registry
+	 */
+	private void injectRegistry(MeterRegistry registry) {
+		Map<String, IntegrationManagement> managed = this.applicationContext.getBeansOfType(IntegrationManagement.class);
+		for (Entry<String, IntegrationManagement> entry : managed.entrySet()) {
+			IntegrationManagement bean = entry.getValue();
+			if (!bean.getOverrides().loggingConfigured) {
+				bean.setLoggingEnabled(this.defaultLoggingEnabled);
+			}
+			bean.registerMeterRegistry(registry);
+		}
+	}
+
+	@Override
+	public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+		if (this.singletonsInstantiated) {
+			if (bean instanceof IntegrationManagement) {
+				((IntegrationManagement) bean).registerMeterRegistry(this.meterRegistry);
+			}
+			return doConfigureMetrics(bean, beanName);
+		}
+		return bean;
+	}
+
+	private Object doConfigureMetrics(Object bean, String name) {
+		if (bean instanceof MessageChannelMetrics) {
+			configureChannelMetrics(name, (MessageChannelMetrics) bean);
+		}
+		else if (bean instanceof MessageHandlerMetrics) {
+			configureHandlerMetrics(name, (MessageHandlerMetrics) bean);
+		}
+		else if (bean instanceof MessageSourceMetrics) {
+			configureSourceMetrics(name, (MessageSourceMetrics) bean);
+			this.sourceConfigurers.values().forEach(c -> c.configure((MessageSourceMetrics) bean, name));
+		}
+		return bean;
 	}
 
 	@SuppressWarnings("unchecked")
 	private void configureChannelMetrics(String name, MessageChannelMetrics bean) {
-		AbstractMessageChannelMetrics metrics = this.metricsFactory.createChannelMetrics(name);
+		AbstractMessageChannelMetrics metrics;
+		if (bean instanceof PollableChannelManagement) {
+			metrics = this.metricsFactory.createPollableChannelMetrics(name);
+		}
+		else {
+			metrics = this.metricsFactory.createChannelMetrics(name);
+		}
 		Assert.state(metrics != null, "'metrics' must not be null");
-		Boolean enabled = smartMatch(this.enabledCountsPatterns, name);
+		ManagementOverrides overrides = bean.getOverrides();
+		Boolean enabled = PatternMatchUtils.smartMatch(name, this.enabledCountsPatterns);
 		if (enabled != null) {
 			bean.setCountsEnabled(enabled);
 		}
 		else {
-			bean.setCountsEnabled(this.defaultCountsEnabled);
+			if (!overrides.countsConfigured) {
+				bean.setCountsEnabled(this.defaultCountsEnabled);
+			}
 		}
-		enabled = smartMatch(this.enabledStatsPatterns, name);
+		enabled = PatternMatchUtils.smartMatch(name, this.enabledStatsPatterns);
 		if (enabled != null) {
 			bean.setStatsEnabled(enabled);
 			metrics.setFullStatsEnabled(enabled);
 		}
 		else {
-			bean.setStatsEnabled(this.defaultStatsEnabled);
-			metrics.setFullStatsEnabled(this.defaultStatsEnabled);
+			if (!overrides.statsConfigured) {
+				bean.setStatsEnabled(this.defaultStatsEnabled);
+				metrics.setFullStatsEnabled(this.defaultStatsEnabled);
+			}
 		}
-		if (bean instanceof ConfigurableMetricsAware) {
+		if (bean instanceof ConfigurableMetricsAware && !overrides.metricsConfigured) {
 			((ConfigurableMetricsAware<AbstractMessageChannelMetrics>) bean).configureMetrics(metrics);
 		}
 		this.channelsByName.put(name, bean);
@@ -249,23 +329,28 @@ public class IntegrationManagementConfigurer implements SmartInitializingSinglet
 	private void configureHandlerMetrics(String name, MessageHandlerMetrics bean) {
 		AbstractMessageHandlerMetrics metrics = this.metricsFactory.createHandlerMetrics(name);
 		Assert.state(metrics != null, "'metrics' must not be null");
-		Boolean enabled = smartMatch(this.enabledCountsPatterns, name);
+		ManagementOverrides overrides = bean.getOverrides();
+		Boolean enabled = PatternMatchUtils.smartMatch(name, this.enabledCountsPatterns);
 		if (enabled != null) {
 			bean.setCountsEnabled(enabled);
 		}
 		else {
-			bean.setCountsEnabled(this.defaultCountsEnabled);
+			if (!overrides.countsConfigured) {
+				bean.setCountsEnabled(this.defaultCountsEnabled);
+			}
 		}
-		enabled = smartMatch(this.enabledStatsPatterns, name);
+		enabled = PatternMatchUtils.smartMatch(name, this.enabledStatsPatterns);
 		if (enabled != null) {
 			bean.setStatsEnabled(enabled);
 			metrics.setFullStatsEnabled(enabled);
 		}
 		else {
-			bean.setStatsEnabled(this.defaultStatsEnabled);
-			metrics.setFullStatsEnabled(this.defaultStatsEnabled);
+			if (!overrides.statsConfigured) {
+				bean.setStatsEnabled(this.defaultStatsEnabled);
+				metrics.setFullStatsEnabled(this.defaultStatsEnabled);
+			}
 		}
-		if (bean instanceof ConfigurableMetricsAware) {
+		if (bean instanceof ConfigurableMetricsAware && !overrides.metricsConfigured) {
 			((ConfigurableMetricsAware<AbstractMessageHandlerMetrics>) bean).configureMetrics(metrics);
 		}
 
@@ -273,41 +358,33 @@ public class IntegrationManagementConfigurer implements SmartInitializingSinglet
 	}
 
 	private void configureSourceMetrics(String name, MessageSourceMetrics bean) {
-		Boolean enabled = smartMatch(this.enabledCountsPatterns, name);
+		Boolean enabled = PatternMatchUtils.smartMatch(name, this.enabledCountsPatterns);
 		if (enabled != null) {
 			bean.setCountsEnabled(enabled);
 		}
 		else {
-			bean.setCountsEnabled(this.defaultCountsEnabled);
+			if (!bean.getOverrides().countsConfigured) {
+				bean.setCountsEnabled(this.defaultCountsEnabled);
+			}
 		}
 		this.sourcesByName.put(bean.getManagedName() != null ? bean.getManagedName() : name, bean);
 	}
 
-	/**
-	 * Simple pattern match against the supplied patterns; also supports negated ('!')
-	 * patterns. First match wins (positive or negative).
-	 * @param patterns the patterns.
-	 * @param name the name to match.
-	 * @return null if no match; true for positive match; false for negative match.
-	 */
-	private Boolean smartMatch(String[] patterns, String name) {
-		if (patterns != null) {
-			for (String pattern : patterns) {
-				boolean reverse = false;
-				String patternToUse = pattern;
-				if (pattern.startsWith("!")) {
-					reverse = true;
-					patternToUse = pattern.substring(1);
-				}
-				else if (pattern.startsWith("\\")) {
-					patternToUse = pattern.substring(1);
-				}
-				if (PatternMatchUtils.simpleMatch(patternToUse, name)) {
-					return !reverse;
-				}
-			}
-		}
-		return null; //NOSONAR - intentional null return
+	private void registerComponentGauges(MeterRegistry meterRegistry) {
+		Gauge.builder("spring.integration.channels", this,
+				(c) -> this.applicationContext.getBeansOfType(MessageChannel.class).size())
+				.description("The number of message channels")
+				.register(meterRegistry);
+
+		Gauge.builder("spring.integration.handlers", this,
+				(c) -> this.applicationContext.getBeansOfType(MessageHandler.class).size())
+				.description("The number of message handlers")
+				.register(meterRegistry);
+
+		Gauge.builder("spring.integration.sources", this,
+				(c) -> this.applicationContext.getBeansOfType(MessageSource.class).size())
+				.description("The number of message sources")
+				.register(meterRegistry);
 	}
 
 	public String[] getChannelNames() {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,6 +48,10 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.Timer.Sample;
+
 /**
  * Base class for {@link MessageChannel} implementations providing common
  * properties such as the channel name. Also provides the common functionality
@@ -68,6 +72,8 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 
 	private final Comparator<Object> orderComparator = new OrderComparator();
 
+	private final ManagementOverrides managementOverrides = new ManagementOverrides();
+
 	private volatile boolean shouldTrack = false;
 
 	private volatile Class<?>[] datatypes = new Class<?>[0];
@@ -84,6 +90,12 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 
 	private volatile AbstractMessageChannelMetrics channelMetrics = new DefaultMessageChannelMetrics();
 
+	private MeterRegistry meterRegistry;
+
+	private Timer successTimer;
+
+	private Timer failureTimer;
+
 	public AbstractMessageChannel() {
 		this.interceptors = new ChannelInterceptorList(logger);
 	}
@@ -99,10 +111,21 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 	}
 
 	@Override
+	public void registerMeterRegistry(MeterRegistry registry) {
+		this.meterRegistry = registry;
+	}
+
+	protected MeterRegistry getMeterRegistry() {
+		return this.meterRegistry;
+	}
+
+	@Override
 	public void setCountsEnabled(boolean countsEnabled) {
 		this.countsEnabled = countsEnabled;
+		this.managementOverrides.countsConfigured = true;
 		if (!countsEnabled) {
 			this.statsEnabled = false;
+			this.managementOverrides.statsConfigured = true;
 		}
 	}
 
@@ -115,9 +138,11 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 	public void setStatsEnabled(boolean statsEnabled) {
 		if (statsEnabled) {
 			this.countsEnabled = true;
+			this.managementOverrides.countsConfigured = true;
 		}
 		this.statsEnabled = statsEnabled;
 		this.channelMetrics.setFullStatsEnabled(statsEnabled);
+		this.managementOverrides.statsConfigured = true;
 	}
 
 	@Override
@@ -133,6 +158,7 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 	@Override
 	public void setLoggingEnabled(boolean loggingEnabled) {
 		this.loggingEnabled = loggingEnabled;
+		this.managementOverrides.loggingConfigured = true;
 	}
 
 	protected AbstractMessageChannelMetrics getMetrics() {
@@ -143,6 +169,7 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 	public void configureMetrics(AbstractMessageChannelMetrics metrics) {
 		Assert.notNull(metrics, "'metrics' must not be null");
 		this.channelMetrics = metrics;
+		this.managementOverrides.metricsConfigured = true;
 	}
 
 	/**
@@ -324,6 +351,11 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 	}
 
 	@Override
+	public ManagementOverrides getOverrides() {
+		return this.managementOverrides;
+	}
+
+	@Override
 	protected void onInit() throws Exception {
 		super.onInit();
 		if (this.messageConverter == null) {
@@ -404,6 +436,10 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 		boolean countsEnabled = this.countsEnabled;
 		ChannelInterceptorList interceptors = this.interceptors;
 		AbstractMessageChannelMetrics channelMetrics = this.channelMetrics;
+		Sample sample = null;
+		if (this.meterRegistry != null) {
+			sample = Timer.start(this.meterRegistry);
+		}
 		try {
 			if (this.datatypes.length > 0) {
 				message = this.convertPayloadIfNecessary(message);
@@ -413,7 +449,7 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 				logger.debug("preSend on channel '" + this + "', message: " + message);
 			}
 			if (interceptors.getSize() > 0) {
-				interceptorStack = new ArrayDeque<ChannelInterceptor>();
+				interceptorStack = new ArrayDeque<>();
 				message = interceptors.preSend(message, this, interceptorStack);
 				if (message == null) {
 					return false;
@@ -421,11 +457,18 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 			}
 			if (countsEnabled) {
 				metrics = channelMetrics.beforeSend();
-			}
-			sent = this.doSend(message, timeout);
-			if (countsEnabled) {
+				if (this.meterRegistry != null) {
+					sample = Timer.start(this.meterRegistry);
+				}
+				sent = doSend(message, timeout);
+				if (sample != null) {
+					sample.stop(sendTimer(sent));
+				}
 				channelMetrics.afterSend(metrics, sent);
 				metricsProcessed = true;
+			}
+			else {
+				sent = doSend(message, timeout);
 			}
 
 			if (debugEnabled) {
@@ -439,6 +482,9 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 		}
 		catch (Exception e) {
 			if (countsEnabled && !metricsProcessed) {
+				if (sample != null) {
+					sample.stop(buildSendTimer(false, e.getClass().getSimpleName()));
+				}
 				channelMetrics.afterSend(metrics, false);
 			}
 			if (interceptorStack != null) {
@@ -450,6 +496,31 @@ public abstract class AbstractMessageChannel extends IntegrationObjectSupport
 			throw new MessageDeliveryException(message,
 					"failed to send Message to channel '" + this.getComponentName() + "'", e);
 		}
+	}
+
+	private Timer sendTimer(boolean sent) {
+		if (sent) {
+			if (this.successTimer == null) {
+				this.successTimer = buildSendTimer(true, "none");
+			}
+			return this.successTimer;
+		}
+		else {
+			if (this.failureTimer == null) {
+				this.failureTimer = buildSendTimer(false, "none");
+			}
+			return this.failureTimer;
+		}
+	}
+
+	private Timer buildSendTimer(boolean success, String exception) {
+		return Timer.builder(SEND_TIMER_NAME)
+				.tag("type", "channel")
+				.tag("name", getComponentName() == null ? "unknown" : getComponentName())
+				.tag("result", success ? "success" : "failure")
+				.tag("exception", exception)
+				.description("Send processing time")
+				.register(this.meterRegistry);
 	}
 
 	private Message<?> convertPayloadIfNecessary(Message<?> message) {

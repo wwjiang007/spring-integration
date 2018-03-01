@@ -17,6 +17,7 @@
 package org.springframework.integration.dsl;
 
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.reactivestreams.Publisher;
 
@@ -28,6 +29,7 @@ import org.springframework.integration.dsl.support.FixedSubscriberChannelPrototy
 import org.springframework.integration.dsl.support.MessageChannelReference;
 import org.springframework.integration.endpoint.MessageProducerSupport;
 import org.springframework.integration.endpoint.MethodInvokingMessageSource;
+import org.springframework.integration.endpoint.SourcePollingChannelAdapter;
 import org.springframework.integration.gateway.AnnotationGatewayProxyFactoryBean;
 import org.springframework.integration.gateway.GatewayProxyFactoryBean;
 import org.springframework.integration.gateway.MessagingGatewaySupport;
@@ -40,6 +42,7 @@ import org.springframework.util.Assert;
  *
  * @author Artem Bilan
  * @author Gary Russell
+ * @author Oleg Zhurakousky
  *
  * @since 5.0
  *
@@ -144,6 +147,33 @@ public final class IntegrationFlows {
 	 */
 	public static IntegrationFlowBuilder from(Object service, String methodName) {
 		return from(service, methodName, null);
+	}
+
+	/**
+	 * Provides {@link Supplier} as source of messages to the integration flow which will
+	 * be triggered by the application context's default poller (which must be declared).
+	 * @param messageSource the {@link Supplier} to populate.
+	 * @param <T> the supplier type.
+	 * @return new {@link IntegrationFlowBuilder}.
+	 * @see Supplier
+	 */
+	public static <T> IntegrationFlowBuilder from(Supplier<T> messageSource) {
+		return from(messageSource, "get", null);
+	}
+
+	/**
+	 * Provides {@link Supplier} as source of messages to the integration flow.
+	 * which will be triggered by a <b>provided</b> {@link SourcePollingChannelAdapter}.
+	 * @param messageSource the {@link Supplier} to populate.
+	 * @param endpointConfigurer the {@link Consumer} to provide more options for the
+	 * {@link org.springframework.integration.config.SourcePollingChannelAdapterFactoryBean}.
+	 * @param <T> the supplier type.
+	 * @return new {@link IntegrationFlowBuilder}.
+	 * @see Supplier
+	 */
+	public static <T> IntegrationFlowBuilder from(Supplier<T> messageSource,
+			Consumer<SourcePollingChannelAdapterSpec> endpointConfigurer) {
+		return from(messageSource, "get", endpointConfigurer);
 	}
 
 	/**
@@ -272,28 +302,38 @@ public final class IntegrationFlows {
 	 * Populate the {@link MessageChannel} to the new {@link IntegrationFlowBuilder}
 	 * chain, which becomes as a {@code requestChannel} for the Messaging Gateway(s) built
 	 * on the provided service interface.
-	 * <p>A gateway proxy bean for provided service interface is registered under a name of
-	 * the {@link IntegrationFlow} bean plus {@code .gateway} suffix.
+	 * <p>A gateway proxy bean for provided service interface is registered under a name
+	 * from the
+	 * {@link org.springframework.integration.annotation.MessagingGateway#name()} if present
+	 * or from the {@link IntegrationFlow} bean name plus {@code .gateway} suffix.
 	 * @param serviceInterface the service interface class with an optional
 	 * {@link org.springframework.integration.annotation.MessagingGateway} annotation.
 	 * @return new {@link IntegrationFlowBuilder}.
 	 */
 	public static IntegrationFlowBuilder from(Class<?> serviceInterface) {
+		return from(serviceInterface, null);
+	}
+
+	/**
+	 * Populate the {@link MessageChannel} to the new {@link IntegrationFlowBuilder}
+	 * chain, which becomes as a {@code requestChannel} for the Messaging Gateway(s) built
+	 * on the provided service interface.
+	 * <p>A gateway proxy bean for provided service interface is registered under a name of
+	 * the provided {@code beanName} if not null, or from the
+	 * {@link org.springframework.integration.annotation.MessagingGateway#name()} if present
+	 * or as a fallback to the {@link IntegrationFlow} bean name plus {@code .gateway} suffix.
+	 * @param serviceInterface the service interface class with an optional
+	 * {@link org.springframework.integration.annotation.MessagingGateway} annotation.
+	 * @param beanName the bean name to be used for registering bean for the gateway proxy
+	 * @return new {@link IntegrationFlowBuilder}.
+	 */
+	public static IntegrationFlowBuilder from(Class<?> serviceInterface, String beanName) {
 		final DirectChannel gatewayRequestChannel = new DirectChannel();
 
-		GatewayProxyFactoryBean gatewayProxyFactoryBean =
-				new AnnotationGatewayProxyFactoryBean(serviceInterface) {
+		GatewayProxyFactoryBean gatewayProxyFactoryBean = new AnnotationGatewayProxyFactoryBean(serviceInterface);
 
-					@Override
-					protected void onInit() {
-						super.onInit();
-						getGateways()
-								.values()
-								.forEach(gateway ->
-										gateway.setRequestChannel(gatewayRequestChannel));
-					}
-
-				};
+		gatewayProxyFactoryBean.setDefaultRequestChannel(gatewayRequestChannel);
+		gatewayProxyFactoryBean.setBeanName(beanName);
 
 		return from(gatewayRequestChannel)
 				.addComponent(gatewayProxyFactoryBean);

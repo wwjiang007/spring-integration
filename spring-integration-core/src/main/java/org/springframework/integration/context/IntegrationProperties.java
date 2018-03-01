@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2016 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ import org.springframework.core.io.support.ResourcePatternResolver;
  * their default values from resources 'META-INF/spring.integration.default.properties'.
  *
  * @author Artem Bilan
+ *
  * @since 3.0
  */
 public final class IntegrationProperties {
@@ -70,6 +71,17 @@ public final class IntegrationProperties {
 	 * Specifies the value of {@link org.springframework.integration.support.DefaultMessageBuilderFactory#readOnlyHeaders}.
 	 */
 	public static final String READ_ONLY_HEADERS = INTEGRATION_PROPERTIES_PREFIX + "readOnly.headers";
+
+	/**
+	 * Specifies the value of {@link org.springframework.integration.endpoint.AbstractEndpoint#autoStartup}.
+	 */
+	public static final String ENDPOINTS_NO_AUTO_STARTUP = INTEGRATION_PROPERTIES_PREFIX + "endpoints.noAutoStartup";
+
+	/**
+	 * Whether {@link org.springframework.beans.factory.config.BeanPostProcessor}s should process beans registered at runtime.
+	 * Will be removed in 5.1.
+	 */
+	public static final String POST_PROCESS_DYNAMIC_BEANS = INTEGRATION_PROPERTIES_PREFIX + "postProcessDynamicBeans";
 
 
 	private static Properties defaults;

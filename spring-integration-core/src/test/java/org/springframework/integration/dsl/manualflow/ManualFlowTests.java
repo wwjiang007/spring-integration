@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,15 +21,18 @@ import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -52,13 +55,16 @@ import org.springframework.integration.dsl.IntegrationFlowAdapter;
 import org.springframework.integration.dsl.IntegrationFlowDefinition;
 import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.dsl.MessageProducerSpec;
+import org.springframework.integration.dsl.StandardIntegrationFlow;
 import org.springframework.integration.dsl.channel.MessageChannels;
 import org.springframework.integration.dsl.context.IntegrationFlowContext;
 import org.springframework.integration.dsl.context.IntegrationFlowRegistration;
 import org.springframework.integration.endpoint.MessageProducerSupport;
 import org.springframework.integration.handler.AbstractReplyProducingMessageHandler;
+import org.springframework.integration.support.SmartLifecycleRoleController;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.MessageDeliveryException;
 import org.springframework.messaging.MessageHandler;
 import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.PollableChannel;
@@ -67,6 +73,8 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringRunner;
+
+import reactor.core.publisher.Flux;
 
 /**
  * @author Artem Bilan
@@ -85,6 +93,9 @@ public class ManualFlowTests {
 	@Autowired
 	private BeanFactory beanFactory;
 
+	@Autowired
+	private SmartLifecycleRoleController roleController;
+
 	@Test
 	public void testWithAnonymousMessageProducerStart() {
 		final AtomicBoolean started = new AtomicBoolean();
@@ -99,8 +110,8 @@ public class ManualFlowTests {
 		};
 		QueueChannel channel = new QueueChannel();
 		IntegrationFlow flow = IntegrationFlows.from(producer)
-						.channel(channel)
-						.get();
+				.channel(channel)
+				.get();
 		this.integrationFlowContext.registration(flow).register();
 		assertTrue(started.get());
 	}
@@ -127,8 +138,8 @@ public class ManualFlowTests {
 		MyProducerSpec spec = new MyProducerSpec(new MyProducer());
 		QueueChannel channel = new QueueChannel();
 		IntegrationFlow flow = IntegrationFlows.from(spec.id("foo"))
-						.channel(channel)
-						.get();
+				.channel(channel)
+				.get();
 		this.integrationFlowContext.registration(flow).register();
 		assertTrue(started.get());
 	}
@@ -304,6 +315,107 @@ public class ManualFlowTests {
 		Message<?> receive = resultChannel.receive(1000);
 		assertNotNull(receive);
 		assertEquals("test", receive.getPayload());
+	}
+
+	@Test
+	public void testRoleControl() {
+		String testRole = "bridge";
+
+		PollableChannel resultChannel = new QueueChannel();
+
+		IntegrationFlowRegistration flowRegistration =
+				this.integrationFlowContext
+						.registration(flow -> flow
+								.bridge(e -> e.role(testRole))
+								.channel(resultChannel))
+						.register();
+
+		MessagingTemplate messagingTemplate =
+				this.integrationFlowContext.messagingTemplateFor(flowRegistration.getId());
+
+		messagingTemplate.send(new GenericMessage<>("test"));
+
+		Message<?> receive = resultChannel.receive(1000);
+		assertNotNull(receive);
+		assertEquals("test", receive.getPayload());
+
+		this.roleController.stopLifecyclesInRole(testRole);
+
+		try {
+			messagingTemplate.send(new GenericMessage<>("test2"));
+		}
+		catch (Exception e) {
+			assertThat(e, instanceOf(MessageDeliveryException.class));
+			assertThat(e.getMessage(), containsString("Dispatcher has no subscribers for channel"));
+		}
+
+		this.roleController.startLifecyclesInRole(testRole);
+
+		messagingTemplate.send(new GenericMessage<>("test2"));
+
+		receive = resultChannel.receive(1000);
+		assertNotNull(receive);
+		assertEquals("test2", receive.getPayload());
+
+		flowRegistration.destroy();
+
+		assertTrue(this.roleController.getEndpointsRunningStatus(testRole).isEmpty());
+	}
+
+	@Test
+	public void testDynaSubFlowCreation() {
+		Flux<Message<?>> messageFlux =
+				Flux.just("1,2,3,4")
+						.map(v -> v.split(","))
+						.flatMapIterable(Arrays::asList)
+						.map(Integer::parseInt)
+						.map(GenericMessage::new);
+
+		QueueChannel resultChannel = new QueueChannel();
+
+		IntegrationFlow integrationFlow = IntegrationFlows
+				.from(messageFlux)
+				.<Integer, Boolean>route(p -> p % 2 == 0, m -> m
+						.subFlowMapping(true, sf -> sf.<Integer, String>transform(em -> "even:" + em))
+						.subFlowMapping(false, sf -> sf.<Integer, String>transform(em -> "odd:" + em))
+						.defaultOutputToParentFlow()
+				)
+				.channel(resultChannel)
+				.get();
+
+		this.integrationFlowContext.registration(integrationFlow).register();
+
+		for (int i = 0; i < 4; i++) {
+			Message<?> receive = resultChannel.receive(10_000);
+			assertNotNull(receive);
+		}
+
+		assertNull(resultChannel.receive(0));
+	}
+
+	@Test
+	public void testRegistrationDuplicationRejected() {
+		String testId = "testId";
+
+		StandardIntegrationFlow testFlow =
+				IntegrationFlows.from(Supplier.class)
+						.get();
+
+		this.integrationFlowContext
+				.registration(testFlow)
+				.id(testId)
+				.register();
+
+		try {
+			this.integrationFlowContext
+					.registration(testFlow)
+					.id(testId)
+					.register();
+		}
+		catch (Exception e) {
+			assertThat(e, instanceOf(IllegalArgumentException.class));
+			assertThat(e.getMessage(), containsString("with flowId '" + testId + "' is already registered."));
+		}
 	}
 
 	@Configuration

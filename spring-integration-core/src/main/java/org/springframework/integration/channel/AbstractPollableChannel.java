@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.ExecutorChannelInterceptor;
 import org.springframework.util.CollectionUtils;
 
+import io.micrometer.core.instrument.Counter;
+
 /**
  * Base class for all pollable channels.
  *
@@ -39,6 +41,8 @@ public abstract class AbstractPollableChannel extends AbstractMessageChannel
 		implements PollableChannel, PollableChannelManagement, ExecutorChannelInterceptorAware {
 
 	private volatile int executorInterceptorsSize;
+
+	private Counter receiveCounter;
 
 	@Override
 	public int getReceiveCount() {
@@ -103,7 +107,10 @@ public abstract class AbstractPollableChannel extends AbstractMessageChannel
 				}
 			}
 			Message<?> message = this.doReceive(timeout);
-			if (countsEnabled) {
+			if (countsEnabled && message != null) {
+				if (getMeterRegistry() != null) {
+					incrementReceiveCounter();
+				}
 				getMetrics().afterReceive();
 				counted = true;
 			}
@@ -121,6 +128,16 @@ public abstract class AbstractPollableChannel extends AbstractMessageChannel
 		}
 		catch (RuntimeException e) {
 			if (countsEnabled && !counted) {
+				if (getMeterRegistry() != null) {
+					Counter.builder(RECEIVE_COUNTER_NAME)
+							.tag("name", getComponentName() == null ? "unknown" : getComponentName())
+							.tag("type", "channel")
+							.tag("result", "failure")
+							.tag("exception", e.getClass().getSimpleName())
+							.description("Messages received")
+							.register(getMeterRegistry())
+							.increment();
+				}
 				getMetrics().afterError();
 			}
 			if (!CollectionUtils.isEmpty(interceptorStack)) {
@@ -128,6 +145,19 @@ public abstract class AbstractPollableChannel extends AbstractMessageChannel
 			}
 			throw e;
 		}
+	}
+
+	private void incrementReceiveCounter() {
+		if (this.receiveCounter == null) {
+			this.receiveCounter = Counter.builder(RECEIVE_COUNTER_NAME)
+					.tag("name", getComponentName())
+					.tag("type", "channel")
+					.tag("result", "success")
+					.tag("exception", "none")
+					.description("Messages received")
+					.register(getMeterRegistry());
+		}
+		this.receiveCounter.increment();
 	}
 
 	@Override

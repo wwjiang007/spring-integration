@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,6 +36,9 @@ import org.springframework.messaging.MessageHandlingException;
 import org.springframework.messaging.MessagingException;
 import org.springframework.util.Assert;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.Timer.Sample;
 import reactor.core.CoreSubscriber;
 
 /**
@@ -47,11 +50,14 @@ import reactor.core.CoreSubscriber;
  * @author Mark Fisher
  * @author Oleg Zhurakousky
  * @author Gary Russell
+ * @author Artem Bilan
  */
 @IntegrationManagedResource
-public abstract class AbstractMessageHandler extends IntegrationObjectSupport implements MessageHandler,
-		MessageHandlerMetrics, ConfigurableMetricsAware<AbstractMessageHandlerMetrics>, TrackableComponent, Orderable,
-		CoreSubscriber<Message<?>> {
+public abstract class AbstractMessageHandler extends IntegrationObjectSupport
+		implements MessageHandler, MessageHandlerMetrics, ConfigurableMetricsAware<AbstractMessageHandlerMetrics>,
+		TrackableComponent, Orderable, CoreSubscriber<Message<?>> {
+
+	private final ManagementOverrides managementOverrides = new ManagementOverrides();
 
 	private volatile boolean shouldTrack = false;
 
@@ -69,6 +75,10 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 
 	private volatile boolean loggingEnabled = true;
 
+	private MeterRegistry meterRegistry;
+
+	private Timer successTimer;
+
 	@Override
 	public boolean isLoggingEnabled() {
 		return this.loggingEnabled;
@@ -77,6 +87,12 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 	@Override
 	public void setLoggingEnabled(boolean loggingEnabled) {
 		this.loggingEnabled = loggingEnabled;
+		this.managementOverrides.loggingConfigured = true;
+	}
+
+	@Override
+	public void registerMeterRegistry(MeterRegistry meterRegistry) {
+		this.meterRegistry = meterRegistry;
 	}
 
 	@Override
@@ -103,6 +119,12 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 	public void configureMetrics(AbstractMessageHandlerMetrics metrics) {
 		Assert.notNull(metrics, "'metrics' must not be null");
 		this.handlerMetrics = metrics;
+		this.managementOverrides.metricsConfigured = true;
+	}
+
+	@Override
+	public ManagementOverrides getOverrides() {
+		return this.managementOverrides;
 	}
 
 	@Override
@@ -122,19 +144,30 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 		MetricsContext start = null;
 		boolean countsEnabled = this.countsEnabled;
 		AbstractMessageHandlerMetrics handlerMetrics = this.handlerMetrics;
+		Sample sample = null;
+		if (countsEnabled && this.meterRegistry != null) {
+			sample = Timer.start(this.meterRegistry);
+		}
 		try {
 			if (this.shouldTrack) {
-				message = MessageHistory.write(message, this, this.getMessageBuilderFactory());
+				message = MessageHistory.write(message, this, getMessageBuilderFactory());
 			}
 			if (countsEnabled) {
 				start = handlerMetrics.beforeHandle();
-			}
-			this.handleMessageInternal(message);
-			if (countsEnabled) {
+				handleMessageInternal(message);
+				if (this.meterRegistry != null) {
+					sample.stop(sendTimer());
+				}
 				handlerMetrics.afterHandle(start, true);
+			}
+			else {
+				handleMessageInternal(message);
 			}
 		}
 		catch (Exception e) {
+			if (sample != null) {
+				sample.stop(buildSendTimer(false, e.getClass().getSimpleName()));
+			}
 			if (countsEnabled) {
 				handlerMetrics.afterHandle(start, false);
 			}
@@ -143,6 +176,23 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 			}
 			throw new MessageHandlingException(message, "error occurred in message handler [" + this + "]", e);
 		}
+	}
+
+	private Timer sendTimer() {
+		if (this.successTimer == null) {
+			this.successTimer = buildSendTimer(true, "none");
+		}
+		return this.successTimer;
+	}
+
+	private Timer buildSendTimer(boolean success, String exception) {
+		return Timer.builder(SEND_TIMER_NAME)
+				.tag("type", "handler")
+				.tag("name", getComponentName() == null ? "unknown" : getComponentName())
+				.tag("result", success ? "success" : "failure")
+				.tag("exception", exception)
+				.description("Send processing time")
+				.register(this.meterRegistry);
 	}
 
 	@Override
@@ -232,11 +282,13 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 	public void setStatsEnabled(boolean statsEnabled) {
 		if (statsEnabled) {
 			this.countsEnabled = true;
+			this.managementOverrides.countsConfigured = true;
 		}
 		this.statsEnabled = statsEnabled;
 		if (this.handlerMetrics != null) {
 			this.handlerMetrics.setFullStatsEnabled(statsEnabled);
 		}
+		this.managementOverrides.statsConfigured = true;
 	}
 
 	@Override
@@ -247,8 +299,10 @@ public abstract class AbstractMessageHandler extends IntegrationObjectSupport im
 	@Override
 	public void setCountsEnabled(boolean countsEnabled) {
 		this.countsEnabled = countsEnabled;
+		this.managementOverrides.countsConfigured = true;
 		if (!countsEnabled) {
 			this.statsEnabled = false;
+			this.managementOverrides.statsConfigured = true;
 		}
 	}
 

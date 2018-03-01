@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017 the original author or authors.
+ * Copyright 2016-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.util.Collections;
 
+import javax.annotation.Resource;
+
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -33,27 +35,35 @@ import org.reactivestreams.Publisher;
 
 import org.springframework.beans.DirectFieldAccessor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.ResolvableType;
+import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ClientHttpConnector;
+import org.springframework.integration.channel.QueueChannel;
 import org.springframework.integration.config.EnableIntegration;
 import org.springframework.integration.dsl.IntegrationFlow;
 import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.http.dsl.Http;
+import org.springframework.integration.support.MessageBuilder;
 import org.springframework.integration.webflux.outbound.WebFluxRequestExecutingMessageHandler;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.PollableChannel;
 import org.springframework.security.access.AccessDecisionManager;
 import org.springframework.security.access.vote.AffirmativeBased;
 import org.springframework.security.access.vote.RoleVoter;
-import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.test.context.web.WebAppConfiguration;
@@ -74,6 +84,8 @@ import reactor.test.StepVerifier;
 /**
  * @author Artem Bilan
  * @author Shiliang Li
+ * @author Abhijit Sarkar
+ * @author Gary Russell
  *
  * @since 5.0
  */
@@ -86,7 +98,15 @@ public class WebFluxDslTests {
 	private WebApplicationContext wac;
 
 	@Autowired
-	private WebFluxRequestExecutingMessageHandler serviceInternalReactiveGatewayHandler;
+	@Qualifier("webFluxWithReplyPayloadToFlux.handler")
+	private WebFluxRequestExecutingMessageHandler webFluxWithReplyPayloadToFlux;
+
+	@Resource(name = "org.springframework.integration.webflux.outbound.WebFluxRequestExecutingMessageHandler#1")
+	private WebFluxRequestExecutingMessageHandler httpReactiveProxyFlow;
+
+	@Autowired
+	@Qualifier("webFluxFlowWithReplyPayloadToFlux.input")
+	private MessageChannel webFluxFlowWithReplyPayloadToFluxInput;
 
 	private MockMvc mockMvc;
 
@@ -105,6 +125,46 @@ public class WebFluxDslTests {
 	}
 
 	@Test
+	public void testWebFluxFlowWithReplyPayloadToFlux() {
+		ClientHttpConnector httpConnector = new HttpHandlerConnector((request, response) -> {
+			response.setStatusCode(HttpStatus.OK);
+			response.getHeaders().setContentType(MediaType.TEXT_PLAIN);
+
+			DataBufferFactory bufferFactory = response.bufferFactory();
+			return response.writeWith(Mono.just(bufferFactory.wrap("FOO\nBAR\n".getBytes())))
+					.then(Mono.defer(response::setComplete));
+		});
+
+		WebClient webClient = WebClient.builder()
+				.clientConnector(httpConnector)
+				.build();
+
+		new DirectFieldAccessor(this.webFluxWithReplyPayloadToFlux)
+				.setPropertyValue("webClient", webClient);
+
+		QueueChannel replyChannel = new QueueChannel();
+
+		Message<String> testMessage =
+				MessageBuilder.withPayload("test")
+						.setReplyChannel(replyChannel)
+						.build();
+
+		this.webFluxFlowWithReplyPayloadToFluxInput.send(testMessage);
+
+		Message<?> receive = replyChannel.receive(10_000);
+
+		assertNotNull(receive);
+		assertThat(receive.getPayload(), instanceOf(Flux.class));
+
+		@SuppressWarnings("unchecked")
+		Flux<String> response = (Flux<String>) receive.getPayload();
+
+		StepVerifier.create(response)
+				.expectNext("FOO", "BAR")
+				.verifyComplete();
+	}
+
+	@Test
 	public void testHttpReactiveProxyFlow() throws Exception {
 		ClientHttpConnector httpConnector = new HttpHandlerConnector((request, response) -> {
 			response.setStatusCode(HttpStatus.OK);
@@ -118,7 +178,7 @@ public class WebFluxDslTests {
 				.clientConnector(httpConnector)
 				.build();
 
-		new DirectFieldAccessor(this.serviceInternalReactiveGatewayHandler)
+		new DirectFieldAccessor(this.httpReactiveProxyFlow)
 				.setPropertyValue("webClient", webClient);
 
 		this.mockMvc.perform(
@@ -138,7 +198,7 @@ public class WebFluxDslTests {
 	@SuppressWarnings("unchecked")
 	public void testHttpReactivePost() {
 		this.webTestClient.post().uri("/reactivePost")
-				.body(Flux.just("foo", "bar", "baz"), String.class)
+				.body(Mono.just("foo\nbar\nbaz"), String.class)
 				.exchange()
 				.expectStatus().isAccepted();
 
@@ -174,11 +234,18 @@ public class WebFluxDslTests {
 	public static class ContextConfiguration extends WebSecurityConfigurerAdapter {
 
 		@Override
-		protected void configure(AuthenticationManagerBuilder auth) throws Exception {
-			auth.inMemoryAuthentication()
-					.withUser("guest")
-					.password("guest")
-					.roles("ADMIN");
+		@Bean
+		public UserDetailsService userDetailsService() {
+			InMemoryUserDetailsManager manager = new InMemoryUserDetailsManager();
+
+			manager.createUser(
+					User.withUsername("guest")
+							.passwordEncoder(PasswordEncoderFactories.createDelegatingPasswordEncoder()::encode)
+							.password("guest")
+							.roles("ADMIN")
+							.build());
+
+			return manager;
 		}
 
 		@Override
@@ -193,17 +260,27 @@ public class WebFluxDslTests {
 		}
 
 		@Bean
+		public IntegrationFlow webFluxFlowWithReplyPayloadToFlux() {
+			return f -> f
+					.handle(WebFlux.outboundGateway("http://www.springsource.org/spring-integration")
+									.httpMethod(HttpMethod.GET)
+									.replyPayloadToFlux(true)
+									.expectedResponseType(String.class),
+							e -> e.id("webFluxWithReplyPayloadToFlux"));
+		}
+
+		@Bean
 		public IntegrationFlow httpReactiveProxyFlow() {
 			return IntegrationFlows
 					.from(Http.inboundGateway("/service2")
 							.requestMapping(r -> r.params("name")))
 					.handle(WebFlux.<MultiValueMap<String, String>>outboundGateway(m ->
-									UriComponentsBuilder.fromUriString("http://www.springsource.org/spring-integration")
-											.queryParams(m.getPayload())
-											.build()
-											.toUri())
-									.httpMethod(HttpMethod.GET)
-									.expectedResponseType(String.class))
+							UriComponentsBuilder.fromUriString("http://www.springsource.org/spring-integration")
+									.queryParams(m.getPayload())
+									.build()
+									.toUri())
+							.httpMethod(HttpMethod.GET)
+							.expectedResponseType(String.class))
 					.get();
 		}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2017 the original author or authors.
+ * Copyright 2014-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -70,9 +69,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.ImportResource;
+import org.springframework.context.expression.EnvironmentAccessor;
+import org.springframework.context.expression.MapAccessor;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.core.serializer.support.SerializingConverter;
 import org.springframework.expression.EvaluationContext;
+import org.springframework.expression.spel.support.ReflectivePropertyAccessor;
 import org.springframework.integration.annotation.Aggregator;
 import org.springframework.integration.annotation.BridgeFrom;
 import org.springframework.integration.annotation.BridgeTo;
@@ -452,12 +454,12 @@ public class EnableIntegrationTests {
 		assertThat(result, containsString("SpelExpression"));
 		assertThat(result, containsString("CompoundExpression.getValueInternal"));
 		assertNotNull(this.testGateway2.echo2("baz"));
-		result = this.testGateway2.echo2("baz"); // third one should be compiled
+		// third one should be compiled, but it's not since SF-5.0.2 - proxies aren't compilable SpELs any more
+		result = this.testGateway2.echo2("baz");
 		assertNotNull(result);
 		assertEquals("BAZ2", result.substring(0, 4));
 		assertThat(result, not(containsString("InvocableHandlerMethod")));
 		assertThat(result, containsString("SpelExpression"));
-		assertThat(result, is(new RegexMatcher<String>(".+Ex\\d.getValue\\(.+")));
 		this.testGateway.sendAsync("foo");
 		assertTrue(this.asyncAnnotationProcessLatch.await(1, TimeUnit.SECONDS));
 		assertNotSame(Thread.currentThread(), this.asyncAnnotationProcessThread.get());
@@ -706,7 +708,11 @@ public class EnableIntegrationTests {
 	public void testIntegrationEvaluationContextCustomization() {
 		EvaluationContext evaluationContext = this.context.getBean(EvaluationContext.class);
 		List<?> propertyAccessors = TestUtils.getPropertyValue(evaluationContext, "propertyAccessors", List.class);
+		assertEquals(4, propertyAccessors.size());
 		assertThat(propertyAccessors.get(0), instanceOf(JsonPropertyAccessor.class));
+		assertThat(propertyAccessors.get(1), instanceOf(EnvironmentAccessor.class));
+		assertThat(propertyAccessors.get(2), instanceOf(MapAccessor.class));
+		assertThat(propertyAccessors.get(3), instanceOf(ReflectivePropertyAccessor.class));
 		Map<?, ?> variables = TestUtils.getPropertyValue(evaluationContext, "variables", Map.class);
 		Object testSpelFunction = variables.get("testSpelFunction");
 		assertEquals(ClassUtils.getStaticMethod(TestSpelFunction.class, "bar", Object.class), testSpelFunction);
@@ -1113,7 +1119,7 @@ public class EnableIntegrationTests {
 
 		@Bean
 		public SpelPropertyAccessorRegistrar spelPropertyAccessorRegistrar() {
-			return new SpelPropertyAccessorRegistrar(new JsonPropertyAccessor());
+			return new SpelPropertyAccessorRegistrar(new JsonPropertyAccessor(), new EnvironmentAccessor());
 		}
 
 	}

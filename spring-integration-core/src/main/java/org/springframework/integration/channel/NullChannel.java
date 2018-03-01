@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2016 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 
 package org.springframework.integration.channel;
+
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -32,6 +34,9 @@ import org.springframework.messaging.PollableChannel;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
 /**
  * A channel implementation that essentially behaves like "/dev/null".
  * All receive() calls will return <em>null</em>, and all send() calls
@@ -40,12 +45,15 @@ import org.springframework.util.StringUtils;
  *
  * @author Mark Fisher
  * @author Gary Russell
+ * @author Artyem Bilan
  */
 @IntegrationManagedResource
 public class NullChannel implements PollableChannel, MessageChannelMetrics,
 		ConfigurableMetricsAware<AbstractMessageChannelMetrics>, BeanNameAware, NamedComponent {
 
-	private final Log logger = LogFactory.getLog(this.getClass());
+	private final Log logger = LogFactory.getLog(getClass());
+
+	private final ManagementOverrides managementOverrides = new ManagementOverrides();
 
 	private volatile AbstractMessageChannelMetrics channelMetrics = new DefaultMessageChannelMetrics("nullChannel");
 
@@ -56,6 +64,10 @@ public class NullChannel implements PollableChannel, MessageChannelMetrics,
 	private volatile boolean loggingEnabled = true;
 
 	private String beanName;
+
+	private MeterRegistry meterRegistry;
+
+	private Timer successTimer;
 
 	@Override
 	public void setBeanName(String beanName) {
@@ -71,6 +83,7 @@ public class NullChannel implements PollableChannel, MessageChannelMetrics,
 	@Override
 	public void setLoggingEnabled(boolean loggingEnabled) {
 		this.loggingEnabled = loggingEnabled;
+		this.managementOverrides.loggingConfigured = true;
 	}
 
 	@Override
@@ -84,9 +97,15 @@ public class NullChannel implements PollableChannel, MessageChannelMetrics,
 	}
 
 	@Override
+	public void registerMeterRegistry(MeterRegistry registry) {
+		this.meterRegistry = registry;
+	}
+
+	@Override
 	public void configureMetrics(AbstractMessageChannelMetrics metrics) {
 		Assert.notNull(metrics, "'metrics' must not be null");
 		this.channelMetrics = metrics;
+		this.managementOverrides.metricsConfigured = true;
 	}
 
 	@Override
@@ -97,8 +116,10 @@ public class NullChannel implements PollableChannel, MessageChannelMetrics,
 	@Override
 	public void setCountsEnabled(boolean countsEnabled) {
 		this.countsEnabled = countsEnabled;
+		this.managementOverrides.countsConfigured = true;
 		if (!countsEnabled) {
 			this.statsEnabled = false;
+			this.managementOverrides.statsConfigured = true;
 		}
 	}
 
@@ -111,9 +132,11 @@ public class NullChannel implements PollableChannel, MessageChannelMetrics,
 	public void setStatsEnabled(boolean statsEnabled) {
 		if (statsEnabled) {
 			this.countsEnabled = true;
+			this.managementOverrides.countsConfigured = true;
 		}
 		this.statsEnabled = statsEnabled;
 		this.channelMetrics.setFullStatsEnabled(statsEnabled);
+		this.managementOverrides.statsConfigured = true;
 	}
 
 	@Override
@@ -197,19 +220,40 @@ public class NullChannel implements PollableChannel, MessageChannelMetrics,
 	}
 
 	@Override
+	public ManagementOverrides getOverrides() {
+		return this.managementOverrides;
+	}
+
+	@Override
+	public boolean send(Message<?> message, long timeout) {
+		return send(message);
+	}
+
+	@Override
 	public boolean send(Message<?> message) {
 		if (this.loggingEnabled && this.logger.isDebugEnabled()) {
 			this.logger.debug("message sent to null channel: " + message);
 		}
 		if (this.countsEnabled) {
+			if (this.meterRegistry != null) {
+				sendTimer().record(0, TimeUnit.MILLISECONDS);
+			}
 			this.channelMetrics.afterSend(this.channelMetrics.beforeSend(), true);
 		}
 		return true;
 	}
 
-	@Override
-	public boolean send(Message<?> message, long timeout) {
-		return this.send(message);
+	private Timer sendTimer() {
+		if (this.successTimer == null) {
+			this.successTimer = Timer.builder(SEND_TIMER_NAME)
+					.tag("type", "channel")
+					.tag("name", getComponentName() == null ? "unknown" : getComponentName())
+					.tag("result", "success")
+					.tag("exception", "none")
+					.description("Subflow process time")
+					.register(this.meterRegistry);
+		}
+		return this.successTimer;
 	}
 
 	@Override

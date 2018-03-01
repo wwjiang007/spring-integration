@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2015 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,33 +33,49 @@ import org.springframework.messaging.Message;
 import org.springframework.messaging.MessagingException;
 import org.springframework.util.CollectionUtils;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+
 /**
  * @author Mark Fisher
  * @author Oleg Zhurakousky
  * @author Gary Russell
+ * @author Artem Bilan
+ *
  * @since 2.0
  */
 @IntegrationManagedResource
-public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluator implements MessageSource<T>,
-		MessageSourceMetrics, NamedComponent, BeanNameAware {
+public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluator
+		implements MessageSource<T>, MessageSourceMetrics, NamedComponent, BeanNameAware {
 
 	private final AtomicLong messageCount = new AtomicLong();
 
+	private final ManagementOverrides managementOverrides = new ManagementOverrides();
+
 	private volatile Map<String, Expression> headerExpressions = Collections.emptyMap();
 
-	private volatile String beanName;
+	private String beanName;
 
-	private volatile String managedType;
+	private String managedType;
 
-	private volatile String managedName;
+	private String managedName;
 
 	private volatile boolean countsEnabled;
 
 	private volatile boolean loggingEnabled = true;
 
+	private MeterRegistry meterRegistry;
+
+	private Counter receiveCounter;
+
 	public void setHeaderExpressions(Map<String, Expression> headerExpressions) {
 		this.headerExpressions = (headerExpressions != null)
-				? headerExpressions : Collections.<String, Expression>emptyMap();
+				? headerExpressions : Collections.emptyMap();
+	}
+
+	@Override
+	public void registerMeterRegistry(MeterRegistry registry) {
+		this.meterRegistry = registry;
 	}
 
 	@Override
@@ -100,6 +116,7 @@ public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluat
 	@Override
 	public void setCountsEnabled(boolean countsEnabled) {
 		this.countsEnabled = countsEnabled;
+		this.managementOverrides.countsConfigured = true;
 	}
 
 	@Override
@@ -110,6 +127,7 @@ public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluat
 	@Override
 	public void setLoggingEnabled(boolean loggingEnabled) {
 		this.loggingEnabled = loggingEnabled;
+		this.managementOverrides.loggingConfigured = true;
 	}
 
 	@Override
@@ -128,6 +146,11 @@ public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluat
 	}
 
 	@Override
+	public ManagementOverrides getOverrides() {
+		return this.managementOverrides;
+	}
+
+	@Override
 	public final Message<T> receive() {
 		return buildMessage(doReceive());
 	}
@@ -135,8 +158,14 @@ public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluat
 	@SuppressWarnings("unchecked")
 	protected Message<T> buildMessage(Object result) {
 		Message<T> message = null;
-		Map<String, Object> headers = this.evaluateHeaders();
-		if (result instanceof Message<?>) {
+		Map<String, Object> headers = evaluateHeaders();
+		if (result instanceof AbstractIntegrationMessageBuilder) {
+			if (!CollectionUtils.isEmpty(headers)) {
+				((AbstractIntegrationMessageBuilder<T>) result).copyHeaders(headers);
+			}
+			message = ((AbstractIntegrationMessageBuilder<T>) result).build();
+		}
+		else if (result instanceof Message<?>) {
 			try {
 				message = (Message<T>) result;
 			}
@@ -145,33 +174,49 @@ public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluat
 			}
 			if (!CollectionUtils.isEmpty(headers)) {
 				// create a new Message from this one in order to apply headers
-				AbstractIntegrationMessageBuilder<T> builder = this.getMessageBuilderFactory().fromMessage(message);
-				builder.copyHeaders(headers);
-				message = builder.build();
+				message = getMessageBuilderFactory()
+						.fromMessage(message)
+						.copyHeaders(headers)
+						.build();
 			}
 		}
 		else if (result != null) {
-			T payload = null;
+			T payload;
 			try {
 				payload = (T) result;
 			}
 			catch (Exception e) {
 				throw new MessagingException("MessageSource returned unexpected type.", e);
 			}
-			AbstractIntegrationMessageBuilder<T> builder = this.getMessageBuilderFactory().withPayload(payload);
-			if (!CollectionUtils.isEmpty(headers)) {
-				builder.copyHeaders(headers);
-			}
-			message = builder.build();
+			message = getMessageBuilderFactory()
+					.withPayload(payload)
+					.copyHeaders(headers)
+					.build();
 		}
 		if (this.countsEnabled && message != null) {
+			if (this.meterRegistry != null) {
+				incrementReceiveCounter();
+			}
 			this.messageCount.incrementAndGet();
 		}
 		return message;
 	}
 
+	private void incrementReceiveCounter() {
+		if (this.receiveCounter == null) {
+			this.receiveCounter = Counter.builder(RECEIVE_COUNTER_NAME)
+				.tag("name", getComponentName() == null ? "unknown" : getComponentName())
+				.tag("type", "source")
+				.tag("result", "success")
+				.tag("exception", "none")
+				.description("Messages received")
+				.register(this.meterRegistry);
+		}
+		this.receiveCounter.increment();
+	}
+
 	private Map<String, Object> evaluateHeaders() {
-		Map<String, Object> results = new HashMap<String, Object>();
+		Map<String, Object> results = new HashMap<>();
 		for (Map.Entry<String, Expression> entry : this.headerExpressions.entrySet()) {
 			Object headerValue = this.evaluateExpression(entry.getValue());
 			if (headerValue != null) {
@@ -182,9 +227,9 @@ public abstract class AbstractMessageSource<T> extends AbstractExpressionEvaluat
 	}
 
 	/**
-	 * Subclasses must implement this method. Typically the returned value will be the payload of
-	 * type T, but the returned value may also be a Message instance whose payload is of type T.
-	 *
+	 * Subclasses must implement this method. Typically the returned value will be the {@code payload} of
+	 * type T, but the returned value may also be a {@link Message} instance whose payload is of type T;
+	 * also can be {@link AbstractIntegrationMessageBuilder} which is used for additional headers population.
 	 * @return The value returned.
 	 */
 	protected abstract Object doReceive();

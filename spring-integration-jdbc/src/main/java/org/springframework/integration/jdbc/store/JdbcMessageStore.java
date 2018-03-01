@@ -19,7 +19,6 @@ package org.springframework.integration.jdbc.store;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
@@ -37,7 +36,6 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.core.serializer.Deserializer;
 import org.springframework.core.serializer.Serializer;
-import org.springframework.core.serializer.support.DeserializingConverter;
 import org.springframework.core.serializer.support.SerializingConverter;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.integration.store.AbstractMessageGroupStore;
@@ -45,10 +43,10 @@ import org.springframework.integration.store.MessageGroup;
 import org.springframework.integration.store.MessageMetadata;
 import org.springframework.integration.store.MessageStore;
 import org.springframework.integration.store.SimpleMessageGroup;
+import org.springframework.integration.support.converter.WhiteListDeserializingConverter;
 import org.springframework.integration.util.UUIDConverter;
 import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.SingleColumnRowMapper;
 import org.springframework.jdbc.support.lob.DefaultLobHandler;
@@ -105,12 +103,9 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 
 		COUNT_ALL_MESSAGES_IN_GROUP("SELECT COUNT(MESSAGE_ID) from %PREFIX%GROUP_TO_MESSAGE where GROUP_KEY=? and REGION=?"),
 
-		LIST_MESSAGEIDS_BY_GROUP_KEY("select MESSAGE_ID, CREATED_DATE " +
-				"from %PREFIX%MESSAGE where MESSAGE_ID in (select MESSAGE_ID from %PREFIX%GROUP_TO_MESSAGE where GROUP_KEY=? and REGION=?) " +
-				"ORDER BY CREATED_DATE"),
-
 		LIST_MESSAGES_BY_GROUP_KEY("SELECT MESSAGE_ID, MESSAGE_BYTES, CREATED_DATE " +
-				"from %PREFIX%MESSAGE where MESSAGE_ID in (SELECT MESSAGE_ID from %PREFIX%GROUP_TO_MESSAGE where GROUP_KEY = ?) and REGION=? " +
+				"from %PREFIX%MESSAGE where MESSAGE_ID in " +
+				"(SELECT MESSAGE_ID from %PREFIX%GROUP_TO_MESSAGE where GROUP_KEY = ? and REGION = ?) and REGION = ? " +
 				"ORDER BY CREATED_DATE"),
 
 		POLL_FROM_GROUP("SELECT %PREFIX%MESSAGE.MESSAGE_ID, %PREFIX%MESSAGE.MESSAGE_BYTES from %PREFIX%MESSAGE " +
@@ -144,6 +139,9 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 		COMPLETE_GROUP("UPDATE %PREFIX%MESSAGE_GROUP set UPDATED_DATE=?, COMPLETE=1 where GROUP_KEY=? and REGION=?"),
 
 		UPDATE_LAST_RELEASED_SEQUENCE("UPDATE %PREFIX%MESSAGE_GROUP set UPDATED_DATE=?, LAST_RELEASED_SEQUENCE=? where GROUP_KEY=? and REGION=?"),
+
+		DELETE_MESSAGES_FROM_GROUP("DELETE from %PREFIX%MESSAGE where MESSAGE_ID in " +
+				"(SELECT MESSAGE_ID from %PREFIX%GROUP_TO_MESSAGE where GROUP_KEY = ? and REGION = ?) and REGION = ?"),
 
 		DELETE_MESSAGE_GROUP("DELETE from %PREFIX%MESSAGE_GROUP where GROUP_KEY=? and REGION=?"),
 
@@ -189,7 +187,7 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 
 	private final JdbcOperations jdbcTemplate;
 
-	private volatile DeserializingConverter deserializer;
+	private volatile WhiteListDeserializingConverter deserializer;
 
 	private volatile SerializingConverter serializer;
 
@@ -213,7 +211,7 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 	public JdbcMessageStore(JdbcOperations jdbcOperations) {
 		Assert.notNull(jdbcOperations, "'dataSource' must not be null");
 		this.jdbcTemplate = jdbcOperations;
-		this.deserializer = new DeserializingConverter();
+		this.deserializer = new WhiteListDeserializingConverter();
 		this.serializer = new SerializingConverter();
 	}
 
@@ -265,7 +263,18 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 	 */
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public void setDeserializer(Deserializer<? extends Message<?>> deserializer) {
-		this.deserializer = new DeserializingConverter((Deserializer) deserializer);
+		this.deserializer = new WhiteListDeserializingConverter((Deserializer) deserializer);
+	}
+
+	/**
+	 * Add patterns for packages/classes that are allowed to be deserialized. A class can
+	 * be fully qualified or a wildcard '*' is allowed at the beginning or end of the
+	 * class name. Examples: {@code com.foo.*}, {@code *.MyClass}.
+	 * @param patterns the patterns.
+	 * @since 4.2.13
+	 */
+	public void addWhiteListPatterns(String... patterns) {
+		this.deserializer.addWhiteListPatterns(patterns);
 	}
 
 	@Override
@@ -467,12 +476,13 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 
 	@Override
 	public void removeMessageGroup(Object groupId) {
+		String groupKey = getKey(groupId);
 
-		final String groupKey = getKey(groupId);
-
-		for (UUID messageIds : this.getMessageIdsForGroup(groupId)) {
-			this.removeMessage(messageIds);
-		}
+		this.jdbcTemplate.update(getQuery(Query.DELETE_MESSAGES_FROM_GROUP), ps -> {
+			ps.setString(1, groupKey);
+			ps.setString(2, JdbcMessageStore.this.region);
+			ps.setString(3, JdbcMessageStore.this.region);
+		});
 
 		this.jdbcTemplate.update(getQuery(Query.REMOVE_GROUP_TO_MESSAGE_JOIN), ps -> {
 			if (logger.isDebugEnabled()) {
@@ -544,7 +554,7 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 	@Override
 	public Collection<Message<?>> getMessagesForGroup(Object groupId) {
 		return this.jdbcTemplate.query(getQuery(Query.LIST_MESSAGES_BY_GROUP_KEY), this.mapper, getKey(groupId),
-				this.region);
+				this.region, this.region);
 	}
 
 	@Override
@@ -651,16 +661,6 @@ public class JdbcMessageStore extends AbstractMessageGroupStore implements Messa
 			ps.setString(2, groupId);
 			ps.setString(3, JdbcMessageStore.this.region);
 		});
-	}
-
-	private List<UUID> getMessageIdsForGroup(Object groupId) {
-		String key = getKey(groupId);
-
-		final List<UUID> messageIds = new ArrayList<UUID>();
-
-		this.jdbcTemplate.query(getQuery(Query.LIST_MESSAGEIDS_BY_GROUP_KEY),
-				(RowCallbackHandler) rs -> messageIds.add(UUID.fromString(rs.getString(1))), key, this.region);
-		return messageIds;
 	}
 
 	private String getKey(Object input) {

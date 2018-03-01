@@ -16,6 +16,7 @@
 
 package org.springframework.integration.gateway;
 
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -86,6 +87,8 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 	private final boolean errorOnTimeout;
 
 	private final AtomicLong messageCount = new AtomicLong();
+
+	private final ManagementOverrides managementOverrides = new ManagementOverrides();
 
 	private ErrorMessageStrategy errorMessageStrategy = new DefaultErrorMessageStrategy();
 
@@ -291,6 +294,7 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 	@Override
 	public void setLoggingEnabled(boolean enabled) {
 		this.loggingEnabled = enabled;
+		this.managementOverrides.loggingConfigured = true;
 	}
 
 	@Override
@@ -301,6 +305,7 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 	@Override
 	public void setCountsEnabled(boolean countsEnabled) {
 		this.countsEnabled = countsEnabled;
+		this.managementOverrides.countsConfigured = true;
 	}
 
 	@Override
@@ -317,6 +322,11 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 	public final void setErrorMessageStrategy(ErrorMessageStrategy errorMessageStrategy) {
 		Assert.notNull(errorMessageStrategy, "'errorMessageStrategy' cannot be null");
 		this.errorMessageStrategy = errorMessageStrategy;
+	}
+
+	@Override
+	public ManagementOverrides getOverrides() {
+		return this.managementOverrides;
 	}
 
 	@Override
@@ -783,11 +793,14 @@ public abstract class MessagingGatewaySupport extends AbstractEndpoint
 		}
 
 		@Override
-		public Message<?> toMessage(Object object) throws Exception {
+		public Message<?> toMessage(Object object, @Nullable Map<String, Object> headers) throws Exception {
 			if (object instanceof Message<?>) {
 				return (Message<?>) object;
 			}
-			return (object != null) ? this.messageBuilderFactory.withPayload(object).build() : null;
+
+			return object != null
+					? this.messageBuilderFactory.withPayload(object).copyHeadersIfAbsent(headers).build()
+					: null;
 		}
 
 	}
